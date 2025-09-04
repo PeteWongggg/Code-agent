@@ -1,0 +1,34 @@
+# LLM API 客户端和模型配置
+# 定义要测试的提供商及其对应的模型列表
+
+providers:
+   # 私有化部署提供商
+  private:
+    - "/mnt/i/ai/models/qwen/qwen2.5-coder-3b-instruct"
+
+  # OpenAI 提供商
+  openai:
+    - "gpt-4o"
+    - "gpt-3.5-turbo"
+  
+  # OpenRouter 提供商（多模型聚合）
+  openrouter:
+    - "openai/gpt-4o-mini"
+    - "anthropic/claude-3-5-sonnet"
+
+# 数据集配置
+dataset:
+  name: "princeton-nlp/SWE-bench_Lite"
+  split: "dev"
+
+# 工作空间配置
+workspace:
+  path: "workspace"
+
+# RAG 相关配置
+rag:
+  embedding:
+    enabled: true
+    client: "openai"
+    model: "text-embedding-3-small"  # OpenAI 最轻量的 embedding 模型
+    

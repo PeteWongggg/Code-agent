@@ -198,7 +198,7 @@ def create_client(client_type: str, model: str = None, api_key: str = None):
     return config["client_class"](**client_kwargs)
 
 
-def test_client(client_type: str, model: str = None, test_message: str = "你好，请简单介绍一下你自己。", api_key: str = None, use_stream=False):
+def test_client(client_type: str, model: str = None, test_message: str = "你好，请简单介绍一下你自己。", api_key: str = None, use_stream=False, tools=None, tool_choice=None):
     """
     测试指定的客户端
     
@@ -238,7 +238,7 @@ def test_client(client_type: str, model: str = None, test_message: str = "你好
         
         # 创建消息
         messages = [
-            ChatMessage(role=MessageRole.SYSTEM, content="你是一个有用的AI助手。"),
+            ChatMessage(role=MessageRole.SYSTEM, content="你是一个有用的AI助手,需要通过搜索工具帮我解决问题。"),
             ChatMessage(role=MessageRole.USER, content=test_message)
         ]
         
@@ -248,10 +248,12 @@ def test_client(client_type: str, model: str = None, test_message: str = "你好
             model=model,
             temperature=0.7,
             max_tokens=200,
-            stream=use_stream
+            stream=use_stream,
+            tools=tools,
+            #tool_choice=tool_choice
         )
         
-        print(f"📤 发送请求...")
+        print(f"📤 发送请求...{request}")
         
         # 发送请求
         response = client.chat_completions_create(request)
@@ -276,7 +278,11 @@ def test_client(client_type: str, model: str = None, test_message: str = "你好
         else:
             print(f"✅ 收到响应: ")
             print(f"   模型: {response.model}")
-            print(f"   内容: {response.choices[0].message.content}")
+            msg = response.choices[0].message
+            # 打印工具调用或文本内容
+            if getattr(msg, 'tool_calls', None):
+                print(f"   检测到工具调用 tool_calls: {msg.tool_calls}")
+            print(f"   内容: {msg.content}")
             
             if response.usage:
                 print(f"   Token使用: {response.usage.total_tokens} "
@@ -388,7 +394,7 @@ async def test_client_async(client_type: str, model: str = None, test_message: s
             pass
 
 
-def main(client=None, model=None, api=None, test_clients=None, test_models=None, test_message=None, run_async=False, use_stream=False):
+def  main(client=None, model=None, api=None, test_clients=None, test_models=None, test_message=None, run_async=False, use_stream=False):
     """
     主测试函数
     
@@ -547,10 +553,10 @@ if __name__ == "__main__":
     # 🎯 测试配置 - 修改这里来选择要测试的客户端和模型
     # =============================================================================
     
-    client_2_use = client_list[3]           # 选择客户端 (0:OpenAI, 1:Anthropic, 2:DeepSeek, 3:OpenRouter, 4:Private)
+    client_2_use = "private"           # 使用 OpenAI 做函数调用测试
     api_key = api_map[client_2_use]         # 自动从环境变量获取API密钥
-    model = model_map[client_2_use][0] # 选择模型 (0:第一个模型, 1:第二个模型)
-    use_stream=True # 是否启用流式输出
+    model = model_map[client_2_use][0] # 选择模型
+    use_stream=False # 工具调用建议使用非流式，便于观察 tool_calls
     
     # =============================================================================
     # 🎯 主要测试区域 - 修改下面的参数来测试不同的配置
@@ -576,8 +582,40 @@ if __name__ == "__main__":
         print(f"   1. 复制 env.example 为 .env")
         print(f"   2. 编辑 .env 文件中的 {client_2_use.upper()}_API_KEY")
     
-    # 执行测试
-    main(client=client_2_use, model=model, api=api_key, use_stream=use_stream)
+    # 准备带 tools 的测试
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "联网搜索最新的事实信息，并返回简要摘要与关键来源链接。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "要搜索的查询语句"},
+                        "time_range": {"type": "string", "enum": ["day","week","month","year","all"], "description": "时间范围"}
+                    },
+                    "required": ["query"]
+                }
+            }
+        }
+    ]
+
+    fed_question = "美联储最新的新闻有啥？你需要通过联网搜索后回答我。"
+
+    # 执行测试（私有 vLLM 可能不支持 OpenAI-style tools，先尝试禁用 tools 以定位 400）
+    tools_to_use = tools
+    tool_choice_to_use = "auto"
+
+    test_client(
+        client_type=client_2_use,
+        model=model,
+        test_message=fed_question,
+        api_key=api_key,
+        use_stream=use_stream,
+        tools=tools_to_use,
+        tool_choice=tool_choice_to_use
+    )
     
     
     print("\n" + "=" * 80)

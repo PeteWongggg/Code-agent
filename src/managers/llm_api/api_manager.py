@@ -208,13 +208,13 @@ class LLMAPIManager:
     def chat(
         self,
         model: str,
-        message: str,
-        system_message: Optional[str] = None,
-        conversation_history: Optional[List[Dict[str, str]]] = None,
+        messages: List[Union[Dict[str, Any], ChatMessage]],
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         timeout: Optional[int] = None,
         retry: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         **kwargs
     ) -> Optional[str]:
         """
@@ -222,14 +222,15 @@ class LLMAPIManager:
         
         Args:
             model: 模型名称
-            message: 用户消息内容
-            system_message: 系统消息（可选）
-            conversation_history: 对话历史记录（可选）
-                格式: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+            messages: 已拼接好的消息列表。
+                - 若为字典列表: [{"role": "system|user|assistant|tool", "content": "..."}]
+                - 或 `ChatMessage` 列表
             temperature: 温度参数
             max_tokens: 最大 token 数
             timeout: 请求超时时间（秒），如果不指定则使用初始化时的值
             retry: 最大重试次数，如果不指定则使用初始化时的值
+            tools: 工具描述列表（OpenAI tools 规范）
+            tool_choice: 工具选择策略（"auto" | "none" | {"type":..., ...}）
             **kwargs: 其他请求参数
             
         Returns:
@@ -242,28 +243,16 @@ class LLMAPIManager:
         if self.logger:
             self.logger.debug(f"开始聊天请求 - 客户端: {self.client_name}, 模型: {model}, 流式: {self.stream}")
         
-        # 构建消息列表
-        messages = []
-        
-        # 添加系统消息
-        if system_message:
-            messages.append(ChatMessage(
-                role=MessageRole.SYSTEM,
-                content=system_message
-            ))
-        
-        # 添加对话历史
-        if conversation_history:
-            for msg in conversation_history:
-                role = MessageRole(msg["role"])
-                content = msg["content"]
-                messages.append(ChatMessage(role=role, content=content))
-        
-        # 添加当前用户消息
-        messages.append(ChatMessage(
-            role=MessageRole.USER,
-            content=message
-        ))
+        # 规范化消息列表为 ChatMessage 列表
+        normalized_messages: List[ChatMessage] = []
+        for msg in messages:
+            if isinstance(msg, ChatMessage):
+                normalized_messages.append(msg)
+            else:
+                role_value = msg.get("role")
+                content_value = msg.get("content", "")
+                role_enum = MessageRole(role_value)
+                normalized_messages.append(ChatMessage(role=role_enum, content=content_value))
         
         # 重试逻辑
         last_exception = None
@@ -271,11 +260,13 @@ class LLMAPIManager:
             try:
                 # 创建请求
                 request = self.client.create_request(
-                    messages=messages,
+                    messages=normalized_messages,
                     model=model,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     stream=self.stream,
+                    tools=tools,
+                    tool_choice=tool_choice,
                     **kwargs
                 )
                 

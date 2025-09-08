@@ -41,6 +41,7 @@ class PrivateModelClient(BaseLLMAPI):
         retry_delay: float = 1.0,
         deployment_type: str = "vllm",
         custom_headers: Optional[Dict[str, str]] = None,
+        supports_tools: bool = True,
         **kwargs
     ):
         """
@@ -58,6 +59,8 @@ class PrivateModelClient(BaseLLMAPI):
         """
         self.deployment_type = deployment_type.lower()
         self.custom_headers = custom_headers or {}
+        # 某些私有部署不支持 OpenAI-style tools/function calling
+        self.supports_tools = supports_tools
         super().__init__(
             api_key=api_key or "EMPTY",  # 某些部署需要非空 API key
             base_url=base_url,
@@ -150,10 +153,11 @@ class PrivateModelClient(BaseLLMAPI):
         if request.presence_penalty != 0.0:
             payload["presence_penalty"] = request.presence_penalty
         
-        if request.tools is not None:
+        # 仅在明确支持时透传工具调用参数
+        if self.supports_tools and request.tools is not None:
             payload["tools"] = request.tools
         
-        if request.tool_choice is not None:
+        if self.supports_tools and request.tool_choice is not None:
             payload["tool_choice"] = request.tool_choice
         
         if request.response_format is not None:

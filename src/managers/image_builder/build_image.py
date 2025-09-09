@@ -11,6 +11,12 @@ from pathlib import Path
 from typing import Optional, Any
 from datasets import load_dataset
 
+import docker
+from swebench.harness.prepare_images import filter_dataset_to_build
+from swebench.harness.docker_build import build_instance_images
+from swebench.harness.utils import load_swebench_dataset
+from swebench.harness.test_spec.test_spec import make_test_spec
+
 
 class SWEBenchLoader:
     """
@@ -412,6 +418,147 @@ class SWEBenchLoader:
             'workspace_path': str(self.workspace_path.absolute())
         }
 
+class SWEBenchImageBuilder:
+    def __init__(
+        self,
+        dataset_name: str = "SWE-bench/SWE-bench_Lite",
+        split: str = "test",
+        instance_ids: list = None,
+        max_workers: int = 4,
+        force_rebuild: bool = False,
+        namespace: str = None,
+        tag: str = "latest",
+    ):
+        """
+        Initialize the image builder and build all required images.
+        
+        Args:
+            dataset_name: Name of the dataset to use
+            split: Split to use (dev/test)
+            instance_ids: List of instance IDs to build (None for all)
+            max_workers: Number of workers for parallel processing
+            force_rebuild: Whether to force rebuild all images
+            namespace: Namespace for images
+            tag: Tag for images (default: "latest")
+        """
+        self.client = docker.from_env()
+        self.dataset_name = dataset_name
+        self.split = split
+        self.namespace = namespace
+        self.tag = tag
+        
+        # Load the full dataset
+        self.full_dataset = load_swebench_dataset(dataset_name, split)
+        
+        # Filter to get instances that need building
+        self.dataset_to_build = filter_dataset_to_build(
+            self.full_dataset, instance_ids, self.client, force_rebuild, namespace, tag
+        )
+        
+        # Build images for the filtered dataset
+        if len(self.dataset_to_build) == 0:
+            print("All images exist. Nothing left to build.")
+            self.successful = []
+            self.failed = []
+        else:
+            print(f"Building images for {len(self.dataset_to_build)} instances...")
+            self.successful, self.failed = build_instance_images(
+                client=self.client,
+                dataset=self.dataset_to_build,
+                force_rebuild=force_rebuild,
+                max_workers=max_workers,
+                namespace=namespace,
+                tag=tag,
+            )
+            print(f"Successfully built {len(self.successful)} images")
+            print(f"Failed to build {len(self.failed)} images")
+        
+        # Create a mapping from instance_id to image name for quick lookup
+        self._create_instance_to_image_mapping()
+    
+    def _create_instance_to_image_mapping(self):
+        """Create a mapping from instance_id to image name."""
+        self.instance_to_image = {}
+        
+        for instance in self.full_dataset:
+            spec = make_test_spec(instance, namespace=self.namespace, instance_image_tag=self.tag)
+            self.instance_to_image[instance['instance_id']] = spec.instance_image_key
+    
+    def get_image_name(self, instance_id: str) -> str:
+        """
+        Get the Docker image name for a given instance_id.
+        
+        Args:
+            instance_id: The instance ID to look up
+            
+        Returns:
+            The Docker image name for the instance
+            
+        Raises:
+            KeyError: If instance_id is not found in the dataset
+        """
+        if instance_id not in self.instance_to_image:
+            raise KeyError(f"Instance ID '{instance_id}' not found in dataset")
+        
+        return self.instance_to_image[instance_id]
+    
+    def get_build_status(self, instance_id: str) -> str:
+        """
+        Get the build status for a given instance_id.
+        
+        Args:
+            instance_id: The instance ID to check
+            
+        Returns:
+            'successful', 'failed', or 'not_built'
+        """
+        if instance_id not in self.instance_to_image:
+            return 'not_found'
+        
+        # Check if this instance was in the build list
+        instance_in_build_list = any(
+            inst['instance_id'] == instance_id for inst in self.dataset_to_build
+        )
+        
+        if not instance_in_build_list:
+            return 'already_exists'
+        
+        # Check if it was successfully built
+        for successful_instance in self.successful:
+            if successful_instance['instance_id'] == instance_id:
+                return 'successful'
+        
+        # Check if it failed to build
+        for failed_instance in self.failed:
+            if failed_instance['instance_id'] == instance_id:
+                return 'failed'
+        
+        return 'unknown'
+    
+    def list_all_images(self) -> dict:
+        """
+        Get a dictionary mapping all instance_ids to their image names.
+        
+        Returns:
+            Dictionary with instance_id as key and image name as value
+        """
+        return self.instance_to_image.copy()
+    
+    def get_build_summary(self) -> dict:
+        """
+        Get a summary of the build process.
+        
+        Returns:
+            Dictionary with build statistics
+        """
+        return {
+            'total_instances': len(self.full_dataset),
+            'instances_to_build': len(self.dataset_to_build),
+            'successful_builds': len(self.successful),
+            'failed_builds': len(self.failed),
+            'already_existed': len(self.full_dataset) - len(self.dataset_to_build),
+        }
+    
 
 # 向后兼容的别名
 loader = SWEBenchLoader

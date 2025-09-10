@@ -23,6 +23,12 @@ datasets>=2.14.0
 # JSONPath 解析
 jsonpath-ng>=1.6.0
 
+# Docker 支持
+docker>=6.0.0
+
+# SWE-bench 相关依赖
+swebench>=1.0.0
+
 # 开发依赖（可选）
 # pytest>=7.0.0
 # pytest-asyncio>=0.21.0

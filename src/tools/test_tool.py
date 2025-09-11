@@ -27,6 +27,7 @@ async def main() -> None:
     from src.tools.bash_tool import BashTool
     from src.tools.edit_tool import TextEditorTool
     from src.tools.json_edit_tool import JSONEditTool
+    from src.tools.search_tool import SearchTool
     from src.tools.base import ToolExecutor, ToolCall
 
     # Prepare workspace files
@@ -50,7 +51,8 @@ async def main() -> None:
     bash_tool = BashTool()
     edit_tool = TextEditorTool()
     json_tool = JSONEditTool()
-    executor = ToolExecutor([bash_tool, edit_tool, json_tool])
+    search_tool = SearchTool()
+    executor = ToolExecutor([bash_tool, edit_tool, json_tool, search_tool])
 
     # Stage 1: prerequisite calls that must be run before parallel batch
     # Create the text file for edit tool
@@ -92,6 +94,11 @@ async def main() -> None:
     calls.append(ToolCall(name="json_edit_tool", call_id="json-set", arguments={"operation": "set", "file_path": str(json_file), "json_path": "$.users[0].name", "value": "Alice Smith"}))
     calls.append(ToolCall(name="json_edit_tool", call_id="json-remove", arguments={"operation": "remove", "file_path": str(json_file), "json_path": "$.users[1]"}))
     calls.append(ToolCall(name="json_edit_tool", call_id="json-view-config", arguments={"operation": "view", "file_path": str(json_file), "json_path": "$.config"}))
+
+    # Search tool: search for patterns in the workspace
+    calls.append(ToolCall(name="search_tool", call_id="search-line", arguments={"pattern": "Line", "search_path": str(workspace_dir), "context_lines": 1}))
+    calls.append(ToolCall(name="search_tool", call_id="search-alice", arguments={"pattern": "Alice", "search_path": str(workspace_dir), "case_insensitive": True}))
+    calls.append(ToolCall(name="search_tool", call_id="search-json", arguments={"pattern": "version", "search_path": str(json_file), "file_types": "json"}))
 
     print("\n=== Parallel execution ===")
     results = await executor.parallel_tool_call(calls)

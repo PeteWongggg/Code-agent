@@ -534,35 +534,6 @@ class SWEBenchImageBuilder:
                 return 'failed'
         
         return 'unknown'
-    
-    def list_all_images(self) -> dict:
-        """
-        Get a dictionary mapping all instance_ids to their image names.
-        
-        Returns:
-            Dictionary with instance_id as key and image name as value
-        """
-        return self.instance_to_image.copy()
-    
-    def get_build_summary(self) -> dict:
-        """
-        Get a summary of the build process.
-        
-        Returns:
-            Dictionary with build statistics
-        """
-        return {
-            'total_instances': len(self.full_dataset),
-            'instances_to_build': len(self.dataset_to_build),
-            'successful_builds': len(self.successful),
-            'failed_builds': len(self.failed),
-            'already_existed': len(self.full_dataset) - len(self.dataset_to_build),
-        }
-    
-
-# 向后兼容的别名
-loader = SWEBenchLoader
-
 
 if __name__ == '__main__':
     # 测试代码

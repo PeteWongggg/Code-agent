@@ -1,30 +1,18 @@
 #!/usr/bin/env python3
 """
-SWE-bench Workflow Script
-
 This script demonstrates the complete SWE-bench evaluation workflow:
 1. Get an instance from SWE-bench dataset
 2. Build Docker image for the instance
 3. Extract FAIL_TO_PASS test script
-4. Run test with test patch applied (should fail)
+4. Apply test patch and run test script (should fail)
 5. Read the corresponding solution patch (gold patch)
-6. Apply both test patch and solution patch
+6. Apply both solution patch
 7. Run the test script again (should pass)
-8. Compare outputs to verify correct evaluation
-
-Key concepts:
-- Test patch: Adds the failing test case that demonstrates the bug
-- Solution patch: Fixes the bug in the source code
-- FAIL_TO_PASS: Test should fail before solution, pass after solution
 """
 
-import os
 import sys
-import json
-import asyncio
-import tempfile
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import List, Optional
 from dataclasses import dataclass
 
 # Add the necessary paths to sys.path
@@ -39,7 +27,7 @@ from swebench.harness.test_spec.test_spec import make_test_spec
 from swebench.harness.constants import SWEbenchInstance, MAP_REPO_VERSION_TO_SPECS, START_TEST_OUTPUT, END_TEST_OUTPUT
 from swebench.harness.test_spec.python import get_test_directives
 
-# Import our custom modules
+# Import our custom modulesc
 from src.managers.image_builder.build_image import SWEBenchImageBuilder
 from src.tools.docker_tool_executor import DockerToolExecutor
 from trae_agent.agent.docker_manager import DockerManager

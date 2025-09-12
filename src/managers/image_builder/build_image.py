@@ -428,6 +428,7 @@ class SWEBenchImageBuilder:
         force_rebuild: bool = False,
         namespace: str = None,
         tag: str = "latest",
+        env_image_tag: str = "latest",
     ):
         """
         Initialize the image builder and build all required images.
@@ -440,19 +441,21 @@ class SWEBenchImageBuilder:
             force_rebuild: Whether to force rebuild all images
             namespace: Namespace for images
             tag: Tag for images (default: "latest")
+            env_image_tag: Environment image tag (default: "latest")
         """
         self.client = docker.from_env()
         self.dataset_name = dataset_name
         self.split = split
         self.namespace = namespace
         self.tag = tag
+        self.env_image_tag = env_image_tag
         
         # Load the full dataset
         self.full_dataset = load_swebench_dataset(dataset_name, split)
         
         # Filter to get instances that need building
         self.dataset_to_build = filter_dataset_to_build(
-            self.full_dataset, instance_ids, self.client, force_rebuild, namespace, tag
+            self.full_dataset, instance_ids, self.client, force_rebuild, namespace, tag, self.env_image_tag
         )
         
         # Build images for the filtered dataset
@@ -469,6 +472,7 @@ class SWEBenchImageBuilder:
                 max_workers=max_workers,
                 namespace=namespace,
                 tag=tag,
+                env_image_tag=self.env_image_tag,
             )
             print(f"Successfully built {len(self.successful)} images")
             print(f"Failed to build {len(self.failed)} images")

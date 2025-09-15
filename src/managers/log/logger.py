@@ -16,17 +16,29 @@ class Logger:
     
     功能：
     - 按时间戳创建子文件夹（年月日时分）
-    - 分别创建 debug.log、info.log、warning.log、error.log 四个文件
+    - 分别创建 debug.log、info.log、notice.log、warning.log、error.log 五个文件
     - 提供标准的日志格式
     - 支持控制台和文件双重输出
     """
+
+# 自定义 NOTICE 日志级别（介于 INFO 与 WARNING 之间）
+NOTICE_LEVEL = 25
+if not hasattr(logging, "NOTICE"):
+    logging.addLevelName(NOTICE_LEVEL, "NOTICE")
+
+    def notice(self, message, *args, **kwargs):
+        if self.isEnabledFor(NOTICE_LEVEL):
+            self._log(NOTICE_LEVEL, message, args, **kwargs)
+
+    logging.Logger.notice = notice  # type: ignore[attr-defined]
     
     def __init__(
         self,
         log_base_path: str,
         logger_name: str = "tokfinity_logger",
         console_output: bool = True,
-        log_format: Optional[str] = None
+        log_format: Optional[str] = None,
+        instance_id: Optional[str] = None
     ):
         """
         初始化日志管理器
@@ -40,6 +52,7 @@ class Logger:
         self.log_base_path = Path(log_base_path)
         self.logger_name = logger_name
         self.console_output = console_output
+        self.instance_id = instance_id
         
         # 默认日志格式
         self.log_format = log_format or (
@@ -48,7 +61,7 @@ class Logger:
         )
         
         # 创建时间戳子文件夹
-        self.log_dir = self._create_timestamped_dir()
+        self.log_dir = self._create_log_dir()
         
         # 存储文件处理器，便于后续管理
         self.file_handlers = {}
@@ -56,16 +69,20 @@ class Logger:
         # 初始化日志器
         self.logger = self._setup_logger()
     
-    def _create_timestamped_dir(self) -> Path:
+    def _create_log_dir(self) -> Path:
         """
-        创建基于时间戳的子文件夹
+        创建日志文件夹
         
         Returns:
             Path: 创建的日志目录路径
         """
-        # 生成时间戳格式：YYYYMMDDHHMM
-        timestamp = datetime.now().strftime("%Y%m%d%H%M")
-        log_dir = self.log_base_path / timestamp
+        # 如果提供了实例ID，则使用实例ID作为目录名；否则使用时间戳
+        if self.instance_id:
+            log_dir = self.log_base_path / self.instance_id
+        else:
+            # 生成时间戳格式：YYYYMMDDHHMM
+            timestamp = datetime.now().strftime("%Y%m%d%H%M")
+            log_dir = self.log_base_path / timestamp
         
         # 创建目录（如果不存在）
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -113,6 +130,7 @@ class Logger:
         log_levels = {
             'debug': logging.DEBUG,
             'info': logging.INFO,
+            'notice': NOTICE_LEVEL,
             'warning': logging.WARNING,
             'error': logging.ERROR
         }
@@ -130,6 +148,9 @@ class Logger:
             elif level_name == 'info':
                 # INFO文件记录INFO级别
                 file_handler.addFilter(lambda record: record.levelno == logging.INFO)
+            elif level_name == 'notice':
+                # NOTICE文件记录NOTICE级别
+                file_handler.addFilter(lambda record: record.levelno == NOTICE_LEVEL)
             elif level_name == 'warning':
                 # WARNING文件记录WARNING级别
                 file_handler.addFilter(lambda record: record.levelno == logging.WARNING)
@@ -147,6 +168,10 @@ class Logger:
     def info(self, message: str, *args, **kwargs):
         """记录INFO级别日志"""
         self.logger.info(message, *args, **kwargs)
+    
+    def notice(self, message: str, *args, **kwargs):
+        """记录NOTICE级别日志"""
+        self.logger.log(NOTICE_LEVEL, message, *args, **kwargs)
     
     def warning(self, message: str, *args, **kwargs):
         """记录WARNING级别日志"""
@@ -175,6 +200,7 @@ class Logger:
         return {
             'debug': str(self.log_dir / "debug.log"),
             'info': str(self.log_dir / "info.log"),
+            'notice': str(self.log_dir / "notice.log"),
             'warning': str(self.log_dir / "warning.log"),
             'error': str(self.log_dir / "error.log")
         }

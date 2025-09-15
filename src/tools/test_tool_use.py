@@ -29,7 +29,6 @@ from swebench.harness.test_spec.python import get_test_directives
 
 # Import our custom modulesc
 from src.managers.image_builder.build_image import SWEBenchImageBuilder
-from src.tools.docker_tool_executor import DockerToolExecutor
 from trae_agent.agent.docker_manager import DockerManager
 
 
@@ -51,9 +50,6 @@ class SWEBenchWorkflow:
         
         # Initialize Docker manager (will be set up later with the correct image)
         self.docker_manager = None
-        
-        # Initialize Docker tool executor (will be set up later)
-        self.docker_executor = None
         
         self.current_instance: Optional[SWEbenchInstance] = None
         self.test_spec = None
@@ -141,15 +137,6 @@ class SWEBenchWorkflow:
         # Start the Docker manager
         self.docker_manager.start()
         
-        # Initialize Docker tool executor
-        self.docker_executor = DockerToolExecutor(
-            original_executor=None,  # We'll handle tool calls directly
-            docker_manager=self.docker_manager,
-            docker_tools=["bash", "str_replace_based_edit_tool", "json_edit_tool"],
-            host_workspace_dir=str(self.workspace_dir),
-            container_workspace_dir="/testbed"
-        )
-        
         print("Docker executor setup complete")
     
     def extract_test_script(self) -> List[str]:
@@ -190,8 +177,6 @@ class SWEBenchWorkflow:
         """Run the test script using docker_tool_executor following SWE-bench evaluation logic"""
         if not self.current_instance:
             raise ValueError("No instance selected. Call get_instance() first.")
-        if not self.docker_executor:
-            raise ValueError("Docker executor not set up. Call setup_docker_executor() first.")
         
         # Get the test spec to understand the proper evaluation sequence
         if not self.test_spec:
@@ -280,8 +265,6 @@ class SWEBenchWorkflow:
         """Apply the solution patch using docker_tool_executor following SWE-bench logic"""
         if not self.current_instance:
             raise ValueError("No instance selected. Call get_instance() first.")
-        if not self.docker_executor:
-            raise ValueError("Docker executor not set up. Call setup_docker_executor() first.")
 
         # Get the test spec to understand the proper evaluation sequence
         if not self.test_spec:

@@ -3,6 +3,7 @@ import os
 from typing import override
 
 from src.tools.base import Tool, ToolCallArguments, ToolError, ToolExecResult, ToolParameter
+from src.tools.executor import Executor
 
 
 class _BashSession:
@@ -137,15 +138,79 @@ class _BashSession:
         return ToolExecResult(output=output, error=error, error_code=error_code)  # pyright: ignore[reportUnknownArgumentType]
 
 
+class _ContainerBashSession:
+    """A session of a bash shell running in a container."""
+
+    def __init__(self, executor: Executor):
+        self.executor = executor
+        self._session_id: str | None = None
+        self._started: bool = False
+
+    async def start(self) -> None:
+        """Initialize a container session."""
+        if self._started:
+            return
+        
+        if not self.executor:
+            raise ToolError("No executor provided for container operations")
+        
+        self._session_id = self.executor.init_session()
+        if not self._session_id:
+            raise ToolError("Failed to initialize container session")
+        
+        self._started = True
+
+    async def stop(self) -> None:
+        """Terminate the container session."""
+        if not self._started or not self._session_id:
+            return
+        
+        if self.executor:
+            self.executor.close_session(self._session_id)
+        
+        self._session_id = None
+        self._started = False
+
+    async def run(self, command: str) -> ToolExecResult:
+        """Execute a command in the container bash shell."""
+        if not self._started or not self._session_id:
+            raise ToolError("Container session has not started.")
+        
+        if not self.executor:
+            raise ToolError("No executor available for container operations")
+
+        try:
+            return_code, output = self.executor.execute(self._session_id, command)
+            
+            # The executor returns (return_code, output) tuple
+            # We'll treat any non-zero return code as an error
+            error = None
+            if return_code != 0:
+                error = f"Command failed with exit code {return_code}"
+            
+            return ToolExecResult(
+                output=output,
+                error=error,
+                error_code=return_code
+            )
+        except Exception as e:
+            return ToolExecResult(
+                error=f"Error executing command in container: {e}",
+                error_code=-1
+            )
+
+
 class BashTool(Tool):
     """
     A tool that allows the agent to run bash commands.
     The tool parameters are defined by Anthropic and are not editable.
     """
 
-    def __init__(self, model_provider: str | None = None):
+    def __init__(self, model_provider: str | None = None, executor: Executor | None = None):
         super().__init__(model_provider)
         self._session: _BashSession | None = None
+        self._container_session: _ContainerBashSession | None = None
+        self.executor = executor
 
     @override
     def get_model_provider(self) -> str | None:
@@ -157,13 +222,14 @@ class BashTool(Tool):
 
     @override
     def get_description(self) -> str:
-        return """Run commands in a bash shell
+        return """Run commands in a bash shell (local or container)
 * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
 * You have access to a mirror of common linux and python packages via apt and pip.
 * State is persistent across command calls and discussions with the user.
 * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
 * Please avoid commands that may produce a very large amount of output.
 * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.
+* Use 'execute' for local execution or 'container_execute' for container execution (requires executor).
 """
 
     @override
@@ -215,10 +281,47 @@ class BashTool(Tool):
         except Exception as e:
             return ToolExecResult(error=f"Error running bash command: {e}", error_code=-1)
 
+    async def container_execute(self, arguments: ToolCallArguments) -> ToolExecResult:
+        """Execute a command in a container bash shell."""
+        if not self.executor:
+            return ToolExecResult(
+                error="Container execution requires an executor to be provided during tool initialization",
+                error_code=-1
+            )
+
+        if arguments.get("restart"):
+            if self._container_session:
+                await self._container_session.stop()
+            self._container_session = _ContainerBashSession(self.executor)
+            await self._container_session.start()
+            return ToolExecResult(output="Container session has been restarted.")
+
+        if self._container_session is None:
+            try:
+                self._container_session = _ContainerBashSession(self.executor)
+                await self._container_session.start()
+            except Exception as e:
+                return ToolExecResult(error=f"Error starting container session: {e}", error_code=-1)
+
+        command = str(arguments["command"]) if "command" in arguments else None
+        if command is None:
+            return ToolExecResult(
+                error=f"No command provided for container execution",
+                error_code=-1,
+            )
+        
+        try:
+            return await self._container_session.run(command)
+        except Exception as e:
+            return ToolExecResult(error=f"Error running container bash command: {e}", error_code=-1)
+
     @override
     async def close(self):
-        """Properly close self._process."""
+        """Properly close self._process and container session."""
         if self._session:
-            ret = await self._session.stop()
+            await self._session.stop()
             self._session = None
-            return ret
+        
+        if self._container_session:
+            await self._container_session.stop()
+            self._container_session = None

@@ -10,6 +10,20 @@ from typing import Optional
 from pathlib import Path
 
 
+"""
+模块级自定义 NOTICE 日志级别（介于 INFO 与 WARNING 之间）
+"""
+NOTICE_LEVEL = 25
+if not hasattr(logging, "NOTICE"):
+    logging.addLevelName(NOTICE_LEVEL, "NOTICE")
+
+    def notice(self, message, *args, **kwargs):
+        if self.isEnabledFor(NOTICE_LEVEL):
+            self._log(NOTICE_LEVEL, message, args, **kwargs)
+
+    logging.Logger.notice = notice  # type: ignore[attr-defined]
+
+
 class Logger:
     """
     日志管理器类
@@ -20,17 +34,6 @@ class Logger:
     - 提供标准的日志格式
     - 支持控制台和文件双重输出
     """
-
-# 自定义 NOTICE 日志级别（介于 INFO 与 WARNING 之间）
-NOTICE_LEVEL = 25
-if not hasattr(logging, "NOTICE"):
-    logging.addLevelName(NOTICE_LEVEL, "NOTICE")
-
-    def notice(self, message, *args, **kwargs):
-        if self.isEnabledFor(NOTICE_LEVEL):
-            self._log(NOTICE_LEVEL, message, args, **kwargs)
-
-    logging.Logger.notice = notice  # type: ignore[attr-defined]
     
     def __init__(
         self,

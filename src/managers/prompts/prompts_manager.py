@@ -2,13 +2,14 @@
 
 class PromptsManager:
     def __init__(self, config):
+        self.candidate_length = config.get("selector", {}).get("candidate_length", 5)
         self.generator = {
             "system": self.get_generator_system(),
             "user": self.get_generator_user()
         }
         self.selector = {
-            "system": "",
-            "user": ""
+            "system": self.get_selector_system(),
+            "user": self.get_selector_user()
         }
 
     def get_generator_system(self):
@@ -71,7 +72,7 @@ If you are sure the issue has been solved, you should call the `task_done` to fi
 [Problem statement]:
 We're currently solving the following issue within our repository. Here's the issue text:
 {issue_text}
-        """
+        """ + self.get_generator_notice()
     
     def get_generator_notice(self):
         return """
@@ -85,9 +86,9 @@ We're currently solving the following issue within our repository. Here's the is
 7. Validate locally by running tests, linters, and smoke checks to ensure safety.
 """
     
-    def get_selector_system(self, candidate_length: int):
-        return """
-# ROLE: Act as an expert code evaluator. Given a codebase, an github issue and **{candidate_length} candidate patches** proposed by your colleagues, your responsibility is to **select the correct one** to solve the issue.
+    def get_selector_system(self):
+        return f"""
+# ROLE: Act as an expert code evaluator. Given a codebase, an github issue and **{self.candidate_length} candidate patches** proposed by your colleagues, your responsibility is to **select the correct one** to solve the issue.
 
 # WORK PROCESS:
 You are given a software issue and multiple candidate patches. Your goal is to identify the patch that correctly resolves the issue.
@@ -120,3 +121,6 @@ Choose the patch that best resolves the issue with minimal risk of introducing n
 2. Do not propose new patches.
 3. There must be at least one correct patch.
 """
+
+    def get_selector_user(self):
+        return ""

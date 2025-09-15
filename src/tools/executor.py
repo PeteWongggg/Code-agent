@@ -1,24 +1,56 @@
 import uuid
 import docker
 import pexpect
+import re
 from docker.errors import DockerException, ImageNotFound, NotFound
 
 class Executor:
     def __init__(self, image: str):
-        self.image = image
+        self.image = self._sanitize_image_name(image)
         self.container = None
         self.sessions = {}
+        self.client = docker.from_env()
+        
+        # Validate image exists before creating container
         try:
-            self.client = docker.from_env()
+            self.client.images.get(self.image)
+        except ImageNotFound:
+            raise DockerException(f"Image '{self.image}' not found. Please build the image first.")
+        
+        try:
             self.container = self.client.containers.run(
                 self.image,
                 command="sleep infinity",
                 detach=True,
                 working_dir="/workspace"
             )
-        except (ImageNotFound, NotFound, DockerException) as e:
-            print(f"❌ Failed to start Docker container: {e}")
-            raise
+        except DockerException as e:
+            raise DockerException(f"Failed to create container with image '{self.image}': {e}")
+    
+    def _sanitize_image_name(self, image_name: str) -> str:
+        """
+        Sanitize image name to ensure it's a valid Docker image reference.
+        Docker image names can only contain lowercase letters, digits, hyphens, underscores, and dots.
+        """
+        # If it's already a valid Docker image name (contains : or /), don't over-sanitize
+        if ':' in image_name or '/' in image_name:
+            # Only convert to lowercase and remove leading/trailing invalid chars
+            sanitized = image_name.lower().strip()
+            # Remove leading/trailing invalid characters
+            sanitized = re.sub(r'^[^a-z0-9]+|[^a-z0-9:]+$', '', sanitized)
+            return sanitized
+        
+        # For other cases, do more aggressive sanitization
+        # Remove any invalid characters and convert to lowercase
+        sanitized = re.sub(r'[^a-z0-9._/-]', '_', image_name.lower())
+        
+        # Ensure it doesn't start or end with special characters
+        sanitized = re.sub(r'^[._/-]+|[._/-]+$', '', sanitized)
+        
+        # Replace multiple consecutive special characters with single underscore
+        sanitized = re.sub(r'[._/-]+', '_', sanitized)
+        
+        return sanitized
 
     def init_session(self) -> str:
         session_id = str(uuid.uuid4())

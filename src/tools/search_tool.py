@@ -13,8 +13,9 @@ from src.tools.run import run
 class SearchTool(Tool):
     """Tool for searching files based on text content using ripgrep."""
 
-    def __init__(self, model_provider: str | None = None) -> None:
+    def __init__(self, model_provider: str | None = None, executor=None) -> None:
         super().__init__(model_provider)
+        self._executor = executor
 
     @override
     def get_model_provider(self) -> str | None:
@@ -50,7 +51,7 @@ Example patterns:
     @override
     def get_parameters(self) -> list[ToolParameter]:
         """Get the parameters for the search tool."""
-        return [
+        params = [
             ToolParameter(
                 name="pattern",
                 type="string",
@@ -100,6 +101,25 @@ Example patterns:
                 required=False,
             ),
         ]
+        
+        # Add container-specific parameters if executor is available
+        if self._executor:
+            params.extend([
+                ToolParameter(
+                    name="session_id",
+                    type="string",
+                    description="Session ID for container execution. Required when using container executor.",
+                    required=True,
+                ),
+                ToolParameter(
+                    name="use_container",
+                    type="boolean",
+                    description="Whether to execute search in container. Default: true when executor is provided.",
+                    required=False,
+                ),
+            ])
+        
+        return params
 
     @override
     async def execute(self, arguments: ToolCallArguments) -> ToolExecResult:
@@ -187,6 +207,100 @@ Example patterns:
 
         except Exception as e:
             return ToolExecResult(error=f"Search tool error: {str(e)}", error_code=-1)
+
+    async def container_execute(self, arguments: ToolCallArguments) -> ToolExecResult:
+        """Execute the search operation in a container using the provided executor."""
+        if not self._executor:
+            return ToolExecResult(error="No executor provided for container execution", error_code=-1)
+        
+        try:
+            pattern = str(arguments.get("pattern", ""))
+            if not pattern:
+                return ToolExecResult(error="Pattern parameter is required", error_code=-1)
+
+            search_path_str = str(arguments.get("search_path", ""))
+            if not search_path_str:
+                return ToolExecResult(error="search_path parameter is required", error_code=-1)
+
+            session_id = str(arguments.get("session_id", ""))
+            if not session_id:
+                return ToolExecResult(error="session_id parameter is required for container execution", error_code=-1)
+
+            search_path = Path(search_path_str)
+            if not search_path.is_absolute():
+                return ToolExecResult(
+                    error=f"Search path must be absolute: {search_path}", error_code=-1
+                )
+
+            if not search_path.exists():
+                return ToolExecResult(
+                    error=f"Search path does not exist: {search_path}", error_code=-1
+                )
+
+            # Parse optional parameters
+            context_lines = int(arguments.get("context_lines", 2))
+            case_insensitive = bool(arguments.get("case_insensitive", False))
+            include_hidden = bool(arguments.get("include_hidden", False))
+            include_binary = bool(arguments.get("include_binary", False))
+            file_types = arguments.get("file_types")
+            max_results = int(arguments.get("max_results", 100))
+
+            # Build ripgrep command (same as local execution)
+            cmd_parts = ["rg"]
+
+            # Add context lines
+            if context_lines > 0:
+                cmd_parts.extend(["-C", str(context_lines)])
+
+            # Add case sensitivity
+            if case_insensitive:
+                cmd_parts.append("-i")
+
+            # Add hidden files
+            if include_hidden:
+                cmd_parts.append("--hidden")
+
+            # Add binary files
+            if include_binary:
+                cmd_parts.append("--binary")
+            else:
+                cmd_parts.append("--no-binary")
+
+            # Add file types
+            if file_types and isinstance(file_types, str):
+                for file_type in file_types.split(","):
+                    file_type = file_type.strip()
+                    if file_type:
+                        cmd_parts.extend(["-t", file_type])
+
+            # Add line numbers and filename
+            cmd_parts.extend(["-n", "-H"])
+
+            # Add max results (approximate by limiting to max_results * 2 to account for context)
+            cmd_parts.extend(["-m", str(max_results * 2)])
+
+            # Add pattern and search path (quote pattern to handle spaces)
+            cmd_parts.extend([f'"{pattern}"', str(search_path)])
+
+            # Execute the command in container
+            command = " ".join(cmd_parts)
+            return_code, stdout, stderr = self._executor.execute(session_id, command)
+
+            if return_code == 0:
+                # Parse and format results (reuse existing methods)
+                results = self._parse_rg_output(stdout)
+                formatted_output = self._format_results(results, max_results)
+                return ToolExecResult(output=formatted_output)
+            elif return_code == 1:
+                # No matches found
+                return ToolExecResult(output=f"No matches found for pattern: {pattern}")
+            else:
+                # Error occurred
+                error_msg = stderr if stderr else f"ripgrep exited with code {return_code}"
+                return ToolExecResult(error=error_msg, error_code=return_code)
+
+        except Exception as e:
+            return ToolExecResult(error=f"Container search tool error: {str(e)}", error_code=-1)
 
     def _parse_rg_output(self, output: str) -> list[dict]:
         """Parse ripgrep output into structured results."""

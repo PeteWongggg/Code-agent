@@ -538,6 +538,61 @@ class SWEBenchImageBuilder:
                 return 'failed'
         
         return 'unknown'
+    
+    def delete_image(self, instance_id: str) -> bool:
+        """
+        删除指定实例的镜像
+        
+        Args:
+            instance_id: 要删除的实例ID
+            
+        Returns:
+            bool: 删除是否成功
+        """
+        try:
+            image_name = self.get_image_name(instance_id)
+            self.client.images.remove(image_name)
+            print(f"Successfully deleted image: {image_name}")
+            return True
+        except KeyError as e:
+            print(f"Instance ID not found: {e}")
+            return False
+        except Exception as e:
+            print(f"Failed to delete image for {instance_id}: {e}")
+            return False
+    
+    def delete_all_images(self) -> dict:
+        """
+        删除所有 SWE-bench 相关镜像
+        
+        Returns:
+            dict: 删除结果统计
+        """
+        results = {
+            'successful': [],
+            'failed': [],
+            'not_found': []
+        }
+        
+        for instance_id in self.instance_to_image.keys():
+            try:
+                image_name = self.get_image_name(instance_id)
+                self.client.images.remove(image_name)
+                results['successful'].append(instance_id)
+                print(f"Successfully deleted: {image_name}")
+            except KeyError:
+                results['not_found'].append(instance_id)
+            except Exception as e:
+                results['failed'].append({'instance_id': instance_id, 'error': str(e)})
+                print(f"Failed to delete {instance_id}: {e}")
+        
+        print(f"Deletion summary:")
+        print(f"  Successful: {len(results['successful'])}")
+        print(f"  Failed: {len(results['failed'])}")
+        print(f"  Not found: {len(results['not_found'])}")
+        
+        return results
+    
 
 if __name__ == '__main__':
     # 测试代码

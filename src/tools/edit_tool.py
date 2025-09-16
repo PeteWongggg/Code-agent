@@ -294,7 +294,13 @@ Notes for using the `str_replace` command:
             if return_code != 0:
                 raise ToolError(f"Failed to read file {path} from container. Exit code: {return_code}, Output: {output}")
             
-            return output
+            # Clean the output by removing only the command echo, preserving file content exactly
+            lines = output.split('\n')
+            # Remove the first line if it contains the command echo
+            if lines and f"cat {path}" in lines[0]:
+                lines = lines[2:-1]
+            
+            return '\n'.join(lines)
         except Exception as e:
             raise ToolError(f"Ran into {e} while trying to read {path} from container") from None
 
@@ -324,6 +330,22 @@ EOF"""
             raise ToolError("No executor provided for container operations")
         
         try:
+            # First, read the file to check if old_str exists
+            file_content = self.container_read_file(path, session_id)
+            
+            # Check if old_str is unique in the file
+            occurrences = file_content.count(old_str)
+            if occurrences == 0:
+                raise ToolError(
+                    f"No replacement was performed, old_str `{old_str}` did not appear verbatim in {path}."
+                )
+            elif occurrences > 1:
+                file_content_lines = file_content.split("\n")
+                lines = [idx + 1 for idx, line in enumerate(file_content_lines) if old_str in line]
+                raise ToolError(
+                    f"No replacement was performed. Multiple occurrences of old_str `{old_str}` in lines {lines}. Please ensure it is unique"
+                )
+            
             # Escape special characters for sed
             escaped_old = self._escape_sed(old_str)
             escaped_new = self._escape_sed(new_str) if new_str is not None else ""

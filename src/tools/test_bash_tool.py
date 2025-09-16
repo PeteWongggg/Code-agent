@@ -116,7 +116,7 @@ class MinimalToolsTest:
                 f"git checkout {base_commit} {' '.join(test_files)}" if test_files else "echo 'No test files to reset'"
             ]
             test_script_before = "\n".join(script_lines)
-            
+
             result_before = await self.bash_tool.container_execute({
                 "command": test_script_before,
                 "restart": False

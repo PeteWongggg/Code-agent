@@ -8,12 +8,13 @@ from typing import override
 
 from src.tools.base import Tool, ToolCallArguments, ToolError, ToolExecResult, ToolParameter
 from src.tools.run import run
+from src.tools.executor import Executor
 
 
 class SearchTool(Tool):
     """Tool for searching files based on text content using ripgrep."""
 
-    def __init__(self, model_provider: str | None = None, executor=None) -> None:
+    def __init__(self, model_provider: str | None = None, executor: Executor | None = None) -> None:
         super().__init__(model_provider)
         self._executor = executor
 
@@ -208,12 +209,14 @@ Example patterns:
         except Exception as e:
             return ToolExecResult(error=f"Search tool error: {str(e)}", error_code=-1)
 
-    async def container_execute(self, arguments: ToolCallArguments) -> ToolExecResult:
-        """Execute the search operation in a container using the provided executor."""
+
+    def container_search(self, arguments: ToolCallArguments, session_id: str = "0") -> ToolExecResult:
+        """在容器中执行搜索操作"""
         if not self._executor:
-            return ToolExecResult(error="No executor provided for container execution", error_code=-1)
+            return ToolExecResult(error="No executor provided for container search", error_code=-1)
         
         try:
+            # 从参数中提取搜索相关参数
             pattern = str(arguments.get("pattern", ""))
             if not pattern:
                 return ToolExecResult(error="Pattern parameter is required", error_code=-1)
@@ -222,22 +225,7 @@ Example patterns:
             if not search_path_str:
                 return ToolExecResult(error="search_path parameter is required", error_code=-1)
 
-            session_id = str(arguments.get("session_id", ""))
-            if not session_id:
-                return ToolExecResult(error="session_id parameter is required for container execution", error_code=-1)
-
-            search_path = Path(search_path_str)
-            if not search_path.is_absolute():
-                return ToolExecResult(
-                    error=f"Search path must be absolute: {search_path}", error_code=-1
-                )
-
-            if not search_path.exists():
-                return ToolExecResult(
-                    error=f"Search path does not exist: {search_path}", error_code=-1
-                )
-
-            # Parse optional parameters
+            # 解析可选参数
             context_lines = int(arguments.get("context_lines", 2))
             case_insensitive = bool(arguments.get("case_insensitive", False))
             include_hidden = bool(arguments.get("include_hidden", False))
@@ -245,62 +233,61 @@ Example patterns:
             file_types = arguments.get("file_types")
             max_results = int(arguments.get("max_results", 100))
 
-            # Build ripgrep command (same as local execution)
+            # 构建 ripgrep 命令
             cmd_parts = ["rg"]
 
-            # Add context lines
+            # 添加上下文行数
             if context_lines > 0:
                 cmd_parts.extend(["-C", str(context_lines)])
 
-            # Add case sensitivity
+            # 添加大小写敏感性
             if case_insensitive:
                 cmd_parts.append("-i")
 
-            # Add hidden files
+            # 添加隐藏文件
             if include_hidden:
                 cmd_parts.append("--hidden")
 
-            # Add binary files
+            # 添加二进制文件
             if include_binary:
                 cmd_parts.append("--binary")
             else:
                 cmd_parts.append("--no-binary")
 
-            # Add file types
+            # 添加文件类型
             if file_types and isinstance(file_types, str):
                 for file_type in file_types.split(","):
                     file_type = file_type.strip()
                     if file_type:
                         cmd_parts.extend(["-t", file_type])
 
-            # Add line numbers and filename
+            # 添加行号和文件名
             cmd_parts.extend(["-n", "-H"])
 
-            # Add max results (approximate by limiting to max_results * 2 to account for context)
+            # 添加最大结果数
             cmd_parts.extend(["-m", str(max_results * 2)])
 
-            # Add pattern and search path (quote pattern to handle spaces)
-            cmd_parts.extend([f'"{pattern}"', str(search_path)])
+            # 添加搜索模式和路径
+            cmd_parts.extend([f'"{pattern}"', search_path_str])
 
-            # Execute the command in container
+            # 在容器中执行命令
             command = " ".join(cmd_parts)
-            return_code, stdout, stderr = self._executor.execute(session_id, command)
+            return_code, output = self._executor.execute(session_id, command)
 
             if return_code == 0:
-                # Parse and format results (reuse existing methods)
-                results = self._parse_rg_output(stdout)
+                # 解析和格式化结果
+                results = self._parse_rg_output(output)
                 formatted_output = self._format_results(results, max_results)
                 return ToolExecResult(output=formatted_output)
             elif return_code == 1:
-                # No matches found
+                # 没有找到匹配
                 return ToolExecResult(output=f"No matches found for pattern: {pattern}")
             else:
-                # Error occurred
-                error_msg = stderr if stderr else f"ripgrep exited with code {return_code}"
-                return ToolExecResult(error=error_msg, error_code=return_code)
+                # 发生错误
+                return ToolExecResult(error=f"ripgrep exited with code {return_code}. Output: {output}", error_code=return_code)
 
         except Exception as e:
-            return ToolExecResult(error=f"Container search tool error: {str(e)}", error_code=-1)
+            return ToolExecResult(error=f"Container search error: {str(e)}", error_code=-1)
 
     def _parse_rg_output(self, output: str) -> list[dict]:
         """Parse ripgrep output into structured results."""

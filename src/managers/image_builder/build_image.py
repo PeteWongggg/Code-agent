@@ -476,6 +476,11 @@ class SWEBenchImageBuilder:
             )
             print(f"Successfully built {len(self.successful)} images")
             print(f"Failed to build {len(self.failed)} images")
+            
+            # Add ripgrep to all successfully built images
+            if self.successful:
+                print("Adding ripgrep to built images...")
+                self._add_ripgrep_to_images(self.successful)
         
         # Create a mapping from instance_id to image name for quick lookup
         self._create_instance_to_image_mapping()
@@ -592,6 +597,66 @@ class SWEBenchImageBuilder:
         print(f"  Not found: {len(results['not_found'])}")
         
         return results
+    
+    def _add_ripgrep_to_images(self, successful_images):
+        """Add ripgrep to all successfully built images by creating new layers"""
+        for image_name in successful_images:
+            try:
+                print(f"Adding ripgrep to {image_name}...")
+                self._add_ripgrep_to_single_image(image_name)
+                print(f"✓ Successfully added ripgrep to {image_name}")
+            except Exception as e:
+                print(f"✗ Failed to add ripgrep to {image_name}: {e}")
+    
+    def _add_ripgrep_to_single_image(self, image_name: str):
+        """Add ripgrep to a single image by creating a new layer"""
+        try:
+            # Create a temporary container from the image
+            container = self.client.containers.run(
+                image_name,
+                command="sleep infinity",
+                detach=True,
+                working_dir="/workspace"
+            )
+            
+            # Install ripgrep in the container
+            exec_result = container.exec_run(
+                "apt-get update && apt-get install -y ripgrep && rm -rf /var/lib/apt/lists/*",
+                stdout=True,
+                stderr=True
+            )
+            
+            if exec_result.exit_code != 0:
+                raise Exception(f"Failed to install ripgrep: {exec_result.output.decode()}")
+            
+            # Verify ripgrep installation
+            verify_result = container.exec_run("rg --version", stdout=True, stderr=True)
+            if verify_result.exit_code != 0:
+                raise Exception(f"Ripgrep verification failed: {verify_result.output.decode()}")
+            
+            # Commit the container as a new image with a temporary name
+            temp_image_name = f"{image_name}-temp-ripgrep"
+            container.commit(repository=temp_image_name, tag="latest")
+            
+            # Clean up the container first
+            container.remove(force=True)
+            
+            # Get the new image and tag it with the original name
+            new_image = self.client.images.get(f"{temp_image_name}:latest")
+            new_image.tag(image_name)
+            
+            # Remove the old image
+            self.client.images.remove(image_name, force=True)
+            
+            # Clean up the temporary image
+            try:
+                self.client.images.remove(f"{temp_image_name}:latest", force=True)
+            except:
+                pass  # Ignore cleanup errors
+                
+        except Exception as e:
+            print(f"Error adding ripgrep to {image_name}: {e}")
+            # Continue with other images even if one fails
     
 
 if __name__ == '__main__':

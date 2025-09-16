@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Test script for SWEBenchImageBuilder class.
-Builds 2 images and runs evaluations (pre-patch and post-patch) on both.
-"""
 from pathlib import Path
 import time
 import traceback

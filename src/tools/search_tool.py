@@ -291,16 +291,22 @@ Example patterns:
 
     def _parse_rg_output(self, output: str) -> list[dict]:
         """Parse ripgrep output into structured results."""
+        import re
+        
+        # Remove ANSI escape codes
+        ansi_escape = re.compile(r'\x1b\[[0-9;]*m')
+        clean_output = ansi_escape.sub('', output)
+        
         results = []
         current_file = None
 
-        for line in output.split("\n"):
+        for line in clean_output.split("\n"):
             if not line.strip():
                 continue
 
             # Parse ripgrep output format: file:line:content or file:line-content
             if ":" in line:
-                # Check if this line contains a match (has line number)
+                # Split by colon to get file, line info, and content
                 parts = line.split(":", 2)
                 if len(parts) >= 3:
                     file_path = parts[0].strip()
@@ -319,15 +325,11 @@ Example patterns:
                             "full_line": line,
                             "is_match": True
                         })
-                    elif "-" in line_info and current_file == file_path:
+                    elif "-" in line_info:
                         # This is a context line (before/after match)
                         # Extract line number from context line format like "12-15" or "12-"
                         try:
-                            if "-" in line_info:
-                                line_num = int(line_info.split("-")[0])
-                            else:
-                                continue
-                            
+                            line_num = int(line_info.split("-")[0])
                             results.append({
                                 "file": file_path,
                                 "line": line_num,

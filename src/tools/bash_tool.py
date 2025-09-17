@@ -138,64 +138,6 @@ class _BashSession:
         return ToolExecResult(output=output, error=error, error_code=error_code)  # pyright: ignore[reportUnknownArgumentType]
 
 
-class _ContainerBashSession:
-    """A session of a bash shell running in a container."""
-
-    def __init__(self, executor: Executor):
-        self.executor = executor
-        self._session_id: str | None = None
-        self._started: bool = False
-
-    async def start(self) -> None:
-        """Initialize a container session."""
-        if self._started:
-            return
-        
-        if not self.executor:
-            raise ToolError("No executor provided for container operations")
-        
-        # Use the default session '0' that's automatically initialized by Executor.__init__
-        self._session_id = '0'
-        self._started = True
-
-    async def stop(self) -> None:
-        """Terminate the container session."""
-        if not self._started or not self._session_id:
-            return
-        
-        if self.executor:
-            self.executor.close_session(self._session_id)
-        
-        self._session_id = None
-        self._started = False
-
-    async def run(self, command: str) -> ToolExecResult:
-        """Execute a command in the container bash shell."""
-        if not self._started or not self._session_id:
-            raise ToolError("Container session has not started.")
-        
-        if not self.executor:
-            raise ToolError("No executor available for container operations")
-
-        try:
-            return_code, output = self.executor.execute(self._session_id, command)
-            
-            # The executor returns (return_code, output) tuple
-            # We'll treat any non-zero return code as an error
-            error = None
-            if return_code != 0:
-                error = f"Command failed with exit code {return_code}"
-            
-            return ToolExecResult(
-                output=output,
-                error=error,
-                error_code=return_code
-            )
-        except Exception as e:
-            return ToolExecResult(
-                error=f"Error executing command in container: {e}",
-                error_code=-1
-            )
 
 
 class BashTool(Tool):
@@ -207,7 +149,6 @@ class BashTool(Tool):
     def __init__(self, model_provider: str | None = None, executor: Executor | None = None):
         super().__init__(model_provider)
         self._session: _BashSession | None = None
-        self._container_session: _ContainerBashSession | None = None
         self.executor = executor
 
     @override
@@ -288,18 +229,10 @@ class BashTool(Tool):
             )
 
         if arguments.get("restart"):
-            if self._container_session:
-                await self._container_session.stop()
-            self._container_session = _ContainerBashSession(self.executor)
-            await self._container_session.start()
+            # Close the existing session if it exists
+            self.executor.close_session('0')
+            # The executor will automatically recreate session '0' when needed
             return ToolExecResult(output="Container session has been restarted.")
-
-        if self._container_session is None:
-            try:
-                self._container_session = _ContainerBashSession(self.executor)
-                await self._container_session.start()
-            except Exception as e:
-                return ToolExecResult(error=f"Error starting container session: {e}", error_code=-1)
 
         command = str(arguments["command"]) if "command" in arguments else None
         if command is None:
@@ -308,18 +241,33 @@ class BashTool(Tool):
                 error_code=-1,
             )
         
+        # Check if the session is alive before executing the command
+        if not self.executor.check_session():
+            return ToolExecResult(
+                error="Container session is not alive and could not be restarted",
+                error_code=-1
+            )
+
         try:
-            return await self._container_session.run(command)
+            return_code, output = self.executor.execute('0', command)
+            
+            # The executor returns (return_code, output) tuple
+            # We'll treat any non-zero return code as an error
+            error = None
+            if return_code != 0:
+                error = f"Command failed with exit code {return_code}"
+            
+            return ToolExecResult(
+                output=output,
+                error=error,
+                error_code=return_code
+            )
         except Exception as e:
             return ToolExecResult(error=f"Error running container bash command: {e}", error_code=-1)
 
     @override
     async def close(self):
-        """Properly close self._process and container session."""
+        """Properly close self._process."""
         if self._session:
             await self._session.stop()
             self._session = None
-        
-        if self._container_session:
-            await self._container_session.stop()
-            self._container_session = None

@@ -449,20 +449,31 @@ class SWEBenchImageBuilder:
         self.namespace = namespace
         self.tag = tag
         self.env_image_tag = env_image_tag
-        
-        # Load the full dataset
+        self.instance_to_image = {}
         self.full_dataset = load_swebench_dataset(dataset_name, split)
+        self._populate_existing_images_mapping(instance_ids)
         
         # Filter to get instances that need building
         self.dataset_to_build = filter_dataset_to_build(
             self.full_dataset, instance_ids, self.client, force_rebuild, namespace, tag, self.env_image_tag
         )
         
+        # Filter out instances that already exist in instance_to_image mapping
+        if self.instance_to_image:
+            print(f"Filtering out {len(self.instance_to_image)} existing instances from dataset_to_build...")
+            # Create a set of existing instance IDs for faster lookup
+            existing_instance_ids = set(self.instance_to_image.keys())
+            # Filter out instances that already have images
+            self.dataset_to_build = [inst for inst in self.dataset_to_build if inst['instance_id'] not in existing_instance_ids]
+            print(f"Remaining instances to process: {len(self.dataset_to_build)}")
+        
         # Build images for the filtered dataset
         if len(self.dataset_to_build) == 0:
             print("All images exist. Nothing left to build.")
             self.successful = []
             self.failed = []
+            # Populate instance_to_image mapping for existing images
+            print(f"Populating mapping for instance_ids: {instance_ids}")
         else:
             print(f"Building images for {len(self.dataset_to_build)} instances...")
             self.successful, self.failed = build_instance_images(
@@ -481,17 +492,6 @@ class SWEBenchImageBuilder:
             if self.successful:
                 print("Adding ripgrep to built images...")
                 self._add_ripgrep_to_images(self.successful)
-        
-        # Create a mapping from instance_id to image name for quick lookup
-        self._create_instance_to_image_mapping()
-    
-    def _create_instance_to_image_mapping(self):
-        """Create a mapping from instance_id to image name."""
-        self.instance_to_image = {}
-        
-        for instance in self.full_dataset:
-            spec = make_test_spec(instance, namespace=self.namespace, instance_image_tag=self.tag)
-            self.instance_to_image[instance['instance_id']] = spec.instance_image_key
     
     def get_image_name(self, instance_id: str) -> str:
         """
@@ -598,65 +598,164 @@ class SWEBenchImageBuilder:
         
         return results
     
+    def _populate_existing_images_mapping(self, instance_ids):
+        """Populate instance_to_image mapping for existing images that don't need rebuilding."""
+        if not instance_ids:
+            return
+            
+        for instance_id in instance_ids:
+            try:
+                # Find the instance in the full dataset
+                instance = None
+                for inst in self.full_dataset:
+                    if inst['instance_id'] == instance_id:
+                        instance = inst
+                        break
+                
+                if instance:
+                    test_spec = make_test_spec(instance)
+                    base_image_name = test_spec.instance_image_key
+                    
+                    # Modify the image name to look for the ripgrep version
+                    if ':' in base_image_name:
+                        base_name, tag = base_image_name.rsplit(':', 1)
+                        ripgrep_image_name = f"{base_name}-with-ripgrep"
+                    else:
+                        ripgrep_image_name = f"{base_image_name}-with-ripgrep"
+                    
+                    try:
+                        self.client.images.get(ripgrep_image_name)
+                        self.instance_to_image[instance_id] = ripgrep_image_name
+                        print(f"Found existing ripgrep image for {instance_id}: {ripgrep_image_name}")
+                    except docker.errors.ImageNotFound:
+                        print(f"Ripgrep image not found with name {ripgrep_image_name}, will use original image")
+                        
+            except Exception as e:
+                print(f"Error checking existing image for {instance_id}: {e}")
+
     def _add_ripgrep_to_images(self, successful_images):
         """Add ripgrep to all successfully built images by creating new layers"""
-        for image_name in successful_images:
+        for successful_instance in successful_images:
             try:
-                print(f"Adding ripgrep to {image_name}...")
-                self._add_ripgrep_to_single_image(image_name)
-                print(f"✓ Successfully added ripgrep to {image_name}")
+                # Extract image name from the successful instance
+                # The successful_instance is a tuple containing (TestSpec, DockerClient, Logger, bool)
+                if isinstance(successful_instance, tuple) and len(successful_instance) > 0:
+                    test_spec = successful_instance[0]  # First element is the TestSpec
+                    old_image_name = test_spec.instance_image_key
+                    instance_id = test_spec.instance_id
+                else:
+                    raise Exception(f"Unexpected successful_instance format: {type(successful_instance)}")
+                
+                # Check if this instance already has a ripgrep image in the mapping
+                if instance_id in self.instance_to_image:
+                    existing_image = self.instance_to_image[instance_id]
+                    if '-with-ripgrep' in existing_image:
+                        print(f"✓ Skipping ripgrep addition for {instance_id}: already has ripgrep image {existing_image}")
+                        continue
+                
+                print(f"Adding ripgrep to {old_image_name}...")
+                new_image_name = self._add_ripgrep_to_single_image(old_image_name)
+                
+                # Update the instance_to_image mapping to point to the new image
+                self.instance_to_image[instance_id] = new_image_name
+                print(f"✓ Updated mapping for {instance_id}: {old_image_name} -> {new_image_name}")
+                
+                # Try to delete the old image
+                try:
+                    self.client.images.remove(old_image_name, force=True)
+                    print(f"✓ Deleted old image {old_image_name}")
+                except Exception as e:
+                    print(f"Warning: Could not delete old image {old_image_name}: {e}")
+                
             except Exception as e:
-                print(f"✗ Failed to add ripgrep to {image_name}: {e}")
+                print(f"✗ Failed to add ripgrep to {successful_instance}: {e}")
     
-    def _add_ripgrep_to_single_image(self, image_name: str):
-        """Add ripgrep to a single image by creating a new layer"""
+    def _add_ripgrep_to_single_image(self, old_image_name: str) -> str:
+        """Add ripgrep to a single image by creating a new layer. Returns the new image name."""
         try:
             # Create a temporary container from the image
             container = self.client.containers.run(
-                image_name,
+                old_image_name,
                 command="sleep infinity",
                 detach=True,
                 working_dir="/workspace"
             )
             
-            # Install ripgrep in the container
-            exec_result = container.exec_run(
-                "apt-get update && apt-get install -y ripgrep && rm -rf /var/lib/apt/lists/*",
-                stdout=True,
-                stderr=True
-            )
+            # Install ripgrep in the container - try multiple package managers
+            package_managers = [
+                # Try apt-get first (Ubuntu/Debian)
+                ("apt-get", ["apt-get", "update"], ["apt-get", "install", "-y", "ripgrep"]),
+                # Try yum (CentOS/RHEL)
+                ("yum", ["yum", "install", "-y", "ripgrep"]),
+                # Try dnf (Fedora)
+                ("dnf", ["dnf", "install", "-y", "ripgrep"]),
+                # Try apk (Alpine)
+                ("apk", ["apk", "add", "--no-cache", "ripgrep"]),
+                # Try zypper (openSUSE)
+                ("zypper", ["zypper", "install", "-y", "ripgrep"])
+            ]
             
-            if exec_result.exit_code != 0:
-                raise Exception(f"Failed to install ripgrep: {exec_result.output.decode()}")
+            exec_result = None
+            successful_package_manager = None
+            for i, (pm_name, *commands) in enumerate(package_managers):
+                print(f"Trying package manager {i+1}/{len(package_managers)}: {pm_name}")
+                
+                # Execute each command for this package manager
+                all_successful = True
+                for cmd in commands:
+                    exec_result = container.exec_run(cmd, stdout=True, stderr=True)
+                    if exec_result.exit_code != 0:
+                        print(f"✗ Failed with {pm_name} command {' '.join(cmd)}: {exec_result.output.decode()}")
+                        all_successful = False
+                        break
+                
+                if all_successful:
+                    print(f"✓ Successfully installed ripgrep using: {pm_name}")
+                    successful_package_manager = pm_name
+                    break
+            
+            if not exec_result or exec_result.exit_code != 0:
+                raise Exception(f"Failed to install ripgrep with any package manager: {exec_result.output.decode() if exec_result else 'No command executed'}")
+            
+            # Clean up package manager cache if apt-get was used
+            if successful_package_manager == "apt-get":
+                print("Cleaning up apt cache...")
+                cleanup_result = container.exec_run(["rm", "-rf", "/var/lib/apt/lists/*"], stdout=True, stderr=True)
+                if cleanup_result.exit_code != 0:
+                    print(f"Warning: Failed to clean up apt cache: {cleanup_result.output.decode()}")
+                else:
+                    print("✓ Apt cache cleaned up successfully")
             
             # Verify ripgrep installation
             verify_result = container.exec_run("rg --version", stdout=True, stderr=True)
             if verify_result.exit_code != 0:
                 raise Exception(f"Ripgrep verification failed: {verify_result.output.decode()}")
             
-            # Commit the container as a new image with a temporary name
-            temp_image_name = f"{image_name}-temp-ripgrep"
-            container.commit(repository=temp_image_name, tag="latest")
+            # Create a new image with ripgrep - use a new name
+            # Handle image name and tag properly
+            if ':' in old_image_name:
+                base_name, tag = old_image_name.rsplit(':', 1)
+                new_image_name = f"{base_name}-with-ripgrep"
+            else:
+                new_image_name = f"{old_image_name}-with-ripgrep"
             
-            # Clean up the container first
+            container.commit(repository=new_image_name, tag="latest")
+            print(f"✓ Created new image with ripgrep: {new_image_name}")
+            
+            # Clean up the container
             container.remove(force=True)
             
-            # Get the new image and tag it with the original name
-            new_image = self.client.images.get(f"{temp_image_name}:latest")
-            new_image.tag(image_name)
-            
-            # Remove the old image
-            self.client.images.remove(image_name, force=True)
-            
-            # Clean up the temporary image
+            # Verify the new image exists
             try:
-                self.client.images.remove(f"{temp_image_name}:latest", force=True)
-            except:
-                pass  # Ignore cleanup errors
+                new_image = self.client.images.get(f"{new_image_name}:latest")
+                print(f"✓ New image verified: {new_image_name} (ID: {new_image.short_id})")
+                return f"{new_image_name}:latest"
+            except Exception as e:
+                raise Exception(f"Failed to verify new image {new_image_name}: {e}")
                 
         except Exception as e:
-            print(f"Error adding ripgrep to {image_name}: {e}")
-            # Continue with other images even if one fails
+            print(f"Error adding ripgrep to {old_image_name}: {e}")
+            raise e
     
 
 if __name__ == '__main__':

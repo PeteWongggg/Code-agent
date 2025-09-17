@@ -154,10 +154,8 @@ class _ContainerBashSession:
         if not self.executor:
             raise ToolError("No executor provided for container operations")
         
-        self._session_id = self.executor.init_session()
-        if not self._session_id:
-            raise ToolError("Failed to initialize container session")
-        
+        # Use the default session '0' that's automatically initialized by Executor.__init__
+        self._session_id = '0'
         self._started = True
 
     async def stop(self) -> None:

@@ -72,11 +72,7 @@ class EditToolTest:
                 return False
             
             self.executor = Executor(self.image_name)
-            # Initialize a session for the executor
-            self.session_id = self.executor.init_session()
-            if not self.session_id:
-                logger.error("Failed to initialize executor session")
-                return False
+            self.session_id = '0'
             
             self.edit_tool = TextEditorTool(model_provider="openai", executor=self.executor)
             logger.info("✓ Executor and EditTool setup completed")

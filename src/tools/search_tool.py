@@ -272,7 +272,9 @@ Example patterns:
 
             # 在容器中执行命令
             command = " ".join(cmd_parts)
+            print(f"DEBUG: SearchTool executing command: {command}")  # Debug output
             return_code, output = self._executor.execute(session_id, command)
+            print(f"DEBUG: SearchTool result - Return code: {return_code}, Output: {output}")  # Debug output
 
             if return_code == 0:
                 # 解析和格式化结果
@@ -304,6 +306,12 @@ Example patterns:
             if not line.strip():
                 continue
 
+            # Check if this is a file path line (no colon, just a path)
+            if ":" not in line and "/" in line and not line.strip().startswith("-"):
+                # This is a file path line
+                current_file = line.strip()
+                continue
+            
             # Parse ripgrep output format: file:line:content or file:line-content
             if ":" in line:
                 # Split by colon to get file, line info, and content
@@ -313,11 +321,14 @@ Example patterns:
                     line_info = parts[1].strip()
                     content = parts[2].strip()
                     
+                    # Use current_file if file_path is empty or just a dash
+                    if not file_path or file_path == "-":
+                        file_path = current_file
+                    
                     # Check if line_info is a number (match line) or contains dash (context line)
                     if line_info.isdigit():
                         # This is a match line
                         line_num = int(line_info)
-                        current_file = file_path
                         results.append({
                             "file": file_path,
                             "line": line_num,

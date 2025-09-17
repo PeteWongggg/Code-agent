@@ -6,12 +6,11 @@ from docker.errors import DockerException, ImageNotFound, NotFound
 
 class Executor:
     def __init__(self, image: str):
-        self.image = self._sanitize_image_name(image)
+        self.image = image
         self.container = None
         self.sessions = {}
         self.client = docker.from_env()
         
-        # Validate image exists before creating container
         try:
             self.client.images.get(self.image)
         except ImageNotFound:
@@ -26,31 +25,12 @@ class Executor:
             )
         except DockerException as e:
             raise DockerException(f"Failed to create container with image '{self.image}': {e}")
-    
-    def _sanitize_image_name(self, image_name: str) -> str:
-        """
-        Sanitize image name to ensure it's a valid Docker image reference.
-        Docker image names can only contain lowercase letters, digits, hyphens, underscores, and dots.
-        """
-        # If it's already a valid Docker image name (contains : or /), don't over-sanitize
-        if ':' in image_name or '/' in image_name:
-            # Only convert to lowercase and remove leading/trailing invalid chars
-            sanitized = image_name.lower().strip()
-            # Remove leading/trailing invalid characters
-            sanitized = re.sub(r'^[^a-z0-9]+|[^a-z0-9:]+$', '', sanitized)
-            return sanitized
         
-        # For other cases, do more aggressive sanitization
-        # Remove any invalid characters and convert to lowercase
-        sanitized = re.sub(r'[^a-z0-9._/-]', '_', image_name.lower())
-        
-        # Ensure it doesn't start or end with special characters
-        sanitized = re.sub(r'^[._/-]+|[._/-]+$', '', sanitized)
-        
-        # Replace multiple consecutive special characters with single underscore
-        sanitized = re.sub(r'[._/-]+', '_', sanitized)
-        
-        return sanitized
+        session_id = self.init_session()
+        if session_id is None:
+            raise DockerException("Failed to initialize default session")
+        if session_id in self.sessions:
+            self.sessions['0'] = self.sessions.pop(session_id)
 
     def init_session(self) -> str:
         session_id = str(uuid.uuid4())
@@ -89,6 +69,30 @@ class Executor:
         clean_output = "\n".join(clean_lines)
         shell.expect([r"\$", r"#"])
         return exit_code, clean_output.strip()
+
+    def check_session(self) -> bool:
+        """
+        Check whether the current '0' session is alive and restart it if not.
+        """
+        if '0' in self.sessions:
+            session = self.sessions['0']
+            if session and session.isalive():
+                print(f"✅ Session {'0'} is alive.")
+                return True
+            else:
+                print(f"❌ Session {'0'} is dead. Cleaning up...")
+                self.sessions.pop('0')
+        else:
+            print(f"❌ Session {'0'} does not exist.")
+        
+        new_session_id = self.init_session()
+        if new_session_id is None:
+            print(f"❌ Failed to restart session {'0'}.")
+            return False
+        if new_session_id != '0':
+            self.sessions['0'] = self.sessions.pop(new_session_id)
+
+        return True
 
     def close_session(self, session_id: str):
         if session_id in self.sessions:

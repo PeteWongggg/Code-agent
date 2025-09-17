@@ -1,8 +1,10 @@
 from pathlib import Path
 from typing import override
+import shlex
 
 from src.tools.base import Tool, ToolCallArguments, ToolError, ToolExecResult, ToolParameter
 from src.tools.run import maybe_truncate, run
+from src.tools.executor import Executor
 
 EditToolSubCommands = [
     "view",
@@ -16,8 +18,9 @@ SNIPPET_LINES: int = 4
 class TextEditorTool(Tool):
     """Tool to replace a string in a file."""
 
-    def __init__(self, model_provider: str | None = None) -> None:
+    def __init__(self, model_provider: str | None = None, executor: Executor | None = None) -> None:
         super().__init__(model_provider)
+        self.executor = executor
 
     @override
     def get_model_provider(self) -> str | None:
@@ -277,6 +280,112 @@ Notes for using the `str_replace` command:
             _ = path.write_text(file)
         except Exception as e:
             raise ToolError(f"Ran into {e} while trying to write to {path}") from None
+
+    def container_read_file(self, path: Path, session_id: str = "0") -> str:
+        """Read the content of a file from a container using cat command."""
+        if not self.executor:
+            raise ToolError("No executor provided for container operations")
+        
+        try:
+            # Use cat command to read file content
+            command = f"cat {path}"
+            return_code, output = self.executor.execute(session_id, command)
+            
+            if return_code != 0:
+                raise ToolError(f"Failed to read file {path} from container. Exit code: {return_code}, Output: {output}")
+            
+            # Clean the output by removing only the command echo, preserving file content exactly
+            lines = output.split('\n')
+            # Remove the first line if it contains the command echo
+            if lines and f"cat {path}" in lines[0]:
+                lines = lines[2:-1]
+            
+            return '\n'.join(lines)
+        except Exception as e:
+            raise ToolError(f"Ran into {e} while trying to read {path} from container") from None
+
+    def container_write_file(self, path: Path, content: str, session_id: str = "0") -> None:
+        """Write content to a file in a container using cat with here document."""
+        if not self.executor:
+            raise ToolError("No executor provided for container operations")
+        
+        try:
+            # Use cat with here document to handle long content
+            # Create a script that writes the content using here document
+            script_content = f"""cat > {path} << 'EOF'
+{content}
+EOF"""
+            
+            return_code, output = self.executor.execute(session_id, script_content)
+            
+            if return_code != 0:
+                raise ToolError(f"Failed to write to file {path} in container. Exit code: {return_code}, Output: {output}")
+                
+        except Exception as e:
+            raise ToolError(f"Ran into {e} while trying to write to {path} in container") from None
+
+    def container_str_replace(self, path: Path, old_str: str, new_str: str | None, session_id: str = "0") -> ToolExecResult:
+        """Replace old_str with new_str in a file in a container using sed command."""
+        if not self.executor:
+            raise ToolError("No executor provided for container operations")
+        
+        try:
+            # First, read the file to check if old_str exists
+            file_content = self.container_read_file(path, session_id)
+            
+            # Check if old_str is unique in the file
+            occurrences = file_content.count(old_str)
+            if occurrences == 0:
+                raise ToolError(
+                    f"No replacement was performed, old_str `{old_str}` did not appear verbatim in {path}."
+                )
+            elif occurrences > 1:
+                file_content_lines = file_content.split("\n")
+                lines = [idx + 1 for idx, line in enumerate(file_content_lines) if old_str in line]
+                raise ToolError(
+                    f"No replacement was performed. Multiple occurrences of old_str `{old_str}` in lines {lines}. Please ensure it is unique"
+                )
+            
+            # Escape special characters for sed
+            escaped_old = self._escape_sed(old_str)
+            escaped_new = self._escape_sed(new_str) if new_str is not None else ""
+            
+            # Use sed for in-place replacement
+            command = f"sed -i 's/{escaped_old}/{escaped_new}/g' {path}"
+            return_code, output = self.executor.execute(session_id, command)
+            
+            if return_code != 0:
+                raise ToolError(f"Failed to replace string in file {path} in container. Exit code: {return_code}, Output: {output}")
+            
+            # Read the file to show a snippet of the changes
+            try:
+                file_content = self.container_read_file(path, session_id)
+                # Create a simple snippet showing the change
+                lines = file_content.split('\n')
+                snippet_lines = lines[:min(10, len(lines))]  # Show first 10 lines
+                snippet = '\n'.join(snippet_lines)
+                
+                success_msg = f"The file {path} has been edited in container. "
+                success_msg += self._make_output(snippet, f"a snippet of {path}", init_line=1)
+                success_msg += "Review the changes and make sure they are as expected. Edit the file again if necessary."
+                
+                return ToolExecResult(output=success_msg)
+            except Exception:
+                # If we can't read the file for snippet, just return success
+                return ToolExecResult(output=f"Successfully replaced string in file {path} in container.")
+                
+        except Exception as e:
+            raise ToolError(f"Ran into {e} while trying to replace string in {path} in container") from None
+
+    def _escape_sed(self, text: str) -> str:
+        """Escape special characters in text for use with sed command."""
+        # Escape sed special characters: / \ & 
+        escaped = text.replace('\\', '\\\\')  # Escape backslashes first
+        escaped = escaped.replace('/', '\\/')  # Escape forward slashes
+        escaped = escaped.replace('&', '\\&')  # Escape ampersands
+        escaped = escaped.replace('\n', '\\n')  # Handle newlines
+        escaped = escaped.replace('\t', '\\t')  # Handle tabs
+        return escaped
 
     def _make_output(
         self,

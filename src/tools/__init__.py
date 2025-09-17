@@ -3,7 +3,6 @@
 from src.tools.base import Tool, ToolCall, ToolExecutor, ToolResult
 from src.tools.bash_tool import BashTool
 from src.tools.edit_tool import TextEditorTool
-from src.tools.json_edit_tool import JSONEditTool
 from src.tools.search_tool import SearchTool
 
 __all__ = [
@@ -20,6 +19,5 @@ __all__ = [
 tools_registry: dict[str, type[Tool]] = {
     "bash": BashTool,
     "str_replace_based_edit_tool": TextEditorTool,
-    "json_edit_tool": JSONEditTool,
     "search_tool": SearchTool,
 }

@@ -428,6 +428,7 @@ class SWEBenchImageBuilder:
         force_rebuild: bool = False,
         namespace: str = None,
         tag: str = "latest",
+        env_image_tag: str = "latest",
     ):
         """
         Initialize the image builder and build all required images.
@@ -440,19 +441,21 @@ class SWEBenchImageBuilder:
             force_rebuild: Whether to force rebuild all images
             namespace: Namespace for images
             tag: Tag for images (default: "latest")
+            env_image_tag: Environment image tag (default: "latest")
         """
         self.client = docker.from_env()
         self.dataset_name = dataset_name
         self.split = split
         self.namespace = namespace
         self.tag = tag
+        self.env_image_tag = env_image_tag
         
         # Load the full dataset
         self.full_dataset = load_swebench_dataset(dataset_name, split)
         
         # Filter to get instances that need building
         self.dataset_to_build = filter_dataset_to_build(
-            self.full_dataset, instance_ids, self.client, force_rebuild, namespace, tag
+            self.full_dataset, instance_ids, self.client, force_rebuild, namespace, tag, self.env_image_tag
         )
         
         # Build images for the filtered dataset
@@ -469,9 +472,15 @@ class SWEBenchImageBuilder:
                 max_workers=max_workers,
                 namespace=namespace,
                 tag=tag,
+                env_image_tag=self.env_image_tag,
             )
             print(f"Successfully built {len(self.successful)} images")
             print(f"Failed to build {len(self.failed)} images")
+            
+            # Add ripgrep to all successfully built images
+            if self.successful:
+                print("Adding ripgrep to built images...")
+                self._add_ripgrep_to_images(self.successful)
         
         # Create a mapping from instance_id to image name for quick lookup
         self._create_instance_to_image_mapping()
@@ -535,34 +544,120 @@ class SWEBenchImageBuilder:
         
         return 'unknown'
     
-    def list_all_images(self) -> dict:
+    def delete_image(self, instance_id: str) -> bool:
         """
-        Get a dictionary mapping all instance_ids to their image names.
+        删除指定实例的镜像
         
+        Args:
+            instance_id: 要删除的实例ID
+            
         Returns:
-            Dictionary with instance_id as key and image name as value
+            bool: 删除是否成功
         """
-        return self.instance_to_image.copy()
+        try:
+            image_name = self.get_image_name(instance_id)
+            self.client.images.remove(image_name)
+            print(f"Successfully deleted image: {image_name}")
+            return True
+        except KeyError as e:
+            print(f"Instance ID not found: {e}")
+            return False
+        except Exception as e:
+            print(f"Failed to delete image for {instance_id}: {e}")
+            return False
     
-    def get_build_summary(self) -> dict:
+    def delete_all_images(self) -> dict:
         """
-        Get a summary of the build process.
+        删除所有 SWE-bench 相关镜像
         
         Returns:
-            Dictionary with build statistics
+            dict: 删除结果统计
         """
-        return {
-            'total_instances': len(self.full_dataset),
-            'instances_to_build': len(self.dataset_to_build),
-            'successful_builds': len(self.successful),
-            'failed_builds': len(self.failed),
-            'already_existed': len(self.full_dataset) - len(self.dataset_to_build),
+        results = {
+            'successful': [],
+            'failed': [],
+            'not_found': []
         }
+        
+        for instance_id in self.instance_to_image.keys():
+            try:
+                image_name = self.get_image_name(instance_id)
+                self.client.images.remove(image_name)
+                results['successful'].append(instance_id)
+                print(f"Successfully deleted: {image_name}")
+            except KeyError:
+                results['not_found'].append(instance_id)
+            except Exception as e:
+                results['failed'].append({'instance_id': instance_id, 'error': str(e)})
+                print(f"Failed to delete {instance_id}: {e}")
+        
+        print(f"Deletion summary:")
+        print(f"  Successful: {len(results['successful'])}")
+        print(f"  Failed: {len(results['failed'])}")
+        print(f"  Not found: {len(results['not_found'])}")
+        
+        return results
     
-
-# 向后兼容的别名
-loader = SWEBenchLoader
-
+    def _add_ripgrep_to_images(self, successful_images):
+        """Add ripgrep to all successfully built images by creating new layers"""
+        for image_name in successful_images:
+            try:
+                print(f"Adding ripgrep to {image_name}...")
+                self._add_ripgrep_to_single_image(image_name)
+                print(f"✓ Successfully added ripgrep to {image_name}")
+            except Exception as e:
+                print(f"✗ Failed to add ripgrep to {image_name}: {e}")
+    
+    def _add_ripgrep_to_single_image(self, image_name: str):
+        """Add ripgrep to a single image by creating a new layer"""
+        try:
+            # Create a temporary container from the image
+            container = self.client.containers.run(
+                image_name,
+                command="sleep infinity",
+                detach=True,
+                working_dir="/workspace"
+            )
+            
+            # Install ripgrep in the container
+            exec_result = container.exec_run(
+                "apt-get update && apt-get install -y ripgrep && rm -rf /var/lib/apt/lists/*",
+                stdout=True,
+                stderr=True
+            )
+            
+            if exec_result.exit_code != 0:
+                raise Exception(f"Failed to install ripgrep: {exec_result.output.decode()}")
+            
+            # Verify ripgrep installation
+            verify_result = container.exec_run("rg --version", stdout=True, stderr=True)
+            if verify_result.exit_code != 0:
+                raise Exception(f"Ripgrep verification failed: {verify_result.output.decode()}")
+            
+            # Commit the container as a new image with a temporary name
+            temp_image_name = f"{image_name}-temp-ripgrep"
+            container.commit(repository=temp_image_name, tag="latest")
+            
+            # Clean up the container first
+            container.remove(force=True)
+            
+            # Get the new image and tag it with the original name
+            new_image = self.client.images.get(f"{temp_image_name}:latest")
+            new_image.tag(image_name)
+            
+            # Remove the old image
+            self.client.images.remove(image_name, force=True)
+            
+            # Clean up the temporary image
+            try:
+                self.client.images.remove(f"{temp_image_name}:latest", force=True)
+            except:
+                pass  # Ignore cleanup errors
+                
+        except Exception as e:
+            print(f"Error adding ripgrep to {image_name}: {e}")
+            # Continue with other images even if one fails
+    
 
 if __name__ == '__main__':
     # 测试代码

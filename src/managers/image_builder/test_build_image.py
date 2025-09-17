@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Test script for SWEBenchImageBuilder class.
-Builds 2 images and runs evaluations (pre-patch and post-patch) on both.
-"""
 from pathlib import Path
 import time
 import traceback
@@ -48,6 +43,37 @@ GIT_APPLY_CMDS = [
 ]
 
 
+def format_test_results(tests_status: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Helper function to format test results for display.
+    
+    Args:
+        tests_status: The tests_status dictionary from evaluation report
+        
+    Returns:
+        Dictionary with formatted test results
+    """
+    f2p_success = len(tests_status.get("FAIL_TO_PASS", {}).get("success", []))
+    f2p_failure = len(tests_status.get("FAIL_TO_PASS", {}).get("failure", []))
+    p2p_success = len(tests_status.get("PASS_TO_PASS", {}).get("success", []))
+    p2p_failure = len(tests_status.get("PASS_TO_PASS", {}).get("failure", []))
+    
+    return {
+        "fail_to_pass": {
+            "success": f2p_success,
+            "failure": f2p_failure,
+            "total": f2p_success + f2p_failure,
+            "passed": f2p_failure == 0 and f2p_success > 0
+        },
+        "pass_to_pass": {
+            "success": p2p_success,
+            "failure": p2p_failure,
+            "total": p2p_success + p2p_failure,
+            "passed": p2p_failure == 0 and p2p_success > 0
+        }
+    }
+
+
 def run_tests_on_container(
     container,
     test_spec,
@@ -66,11 +92,6 @@ def run_tests_on_container(
     eval_file = log_dir / f"{test_prefix}eval.sh"
     eval_file.write_text(test_spec.eval_script, encoding=UTF8)
     copy_to_container(container, eval_file, Path("/root/eval.sh"))
-    logger.info(f"{test_prefix}Evaluation script written to container")
-    
-    # Run the evaluation script
-    print(f"Running {test_prefix}evaluation script...")
-    logger.info(f"Starting {test_prefix}test execution...")
     
     # Prepare the run command
     run_command = "/bin/bash /root/eval.sh"
@@ -80,29 +101,20 @@ def run_tests_on_container(
         container, run_command, timeout
     )
     
-    logger.info(f"{test_prefix}Test execution completed in {exec_time:.2f} seconds")
-    if timed_out:
-        logger.warning(f"{test_prefix}Test execution timed out")
-    
     # Save test output to file
     test_output_file = log_dir / f"{test_prefix}{LOG_TEST_OUTPUT}"
     test_output_file.write_text(test_output, encoding=UTF8)
-    logger.info(f"{test_prefix}Test output saved to {test_output_file}")
     
     # Parse test results
-    print(f"Parsing {test_prefix}test results...")
     eval_status_map, found = get_logs_eval(test_spec, str(test_output_file))
     
     test_results = None
     if not found:
-        logger.warning(f"Could not parse {test_prefix}test results from output")
         test_results = {"status": "parse_failed", "output": test_output}
     else:
         test_results = eval_status_map
-        logger.info(f"Parsed {len(eval_status_map)} {test_prefix}test results")
     
     # Generate evaluation report
-    print(f"Generating {test_prefix}evaluation report...")
     prediction = {
         KEY_INSTANCE_ID: test_spec.instance_id,
         KEY_PREDICTION: "",  # Empty prediction for pre-patch test
@@ -140,21 +152,20 @@ def test_image(
         "post_patch_test_results": None,
         "pre_patch_evaluation_report": None,
         "post_patch_evaluation_report": None,
-        "total_runtime": 0.0,
+        "pre_patch_terminal_output": None,
+        "post_patch_terminal_output": None,
         "error": None,
         "logs": None,
     }
     
     try:
         # Load the specific instance from the dataset to get the gold patch
-        print(f"Loading instance {instance_id} from {dataset_name}...")
         dataset = load_swebench_dataset(dataset_name, split, [instance_id])
         
         if not dataset:
             raise ValueError(f"Instance {instance_id} not found in dataset {dataset_name}")
         
         instance = dataset[0]
-        print(f"Found instance: {instance['repo']} - {instance['instance_id']}")
         
         # Create test spec from the instance
         test_spec = make_test_spec(instance)
@@ -178,13 +189,11 @@ def test_image(
             # Check if image exists
             try:
                 client.images.get(image_name)
-                logger.info(f"Found image: {image_name}")
             except docker.errors.ImageNotFound:
                 raise ValueError(f"Image {image_name} not found")
             
             # Create container from the image
             container_name = f"test_{instance_id}_{int(time.time())}"
-            print(f"Creating container from image {image_name}...")
             
             # Get run args and platform from test_spec
             run_args = test_spec.docker_specs.get("run_args", {})
@@ -200,44 +209,43 @@ def test_image(
                 platform=test_spec.platform,  # Ensure correct architecture
                 cap_add=cap_add,  # Add capabilities if needed
             )
-            logger.info(f"Created container: {container.id}")
             
             try:
                 # Start the container
                 container.start()
-                logger.info(f"Started container: {container.id}")
                 
                 # Run tests BEFORE applying the patch
-                print("Running tests before applying patch...")
                 pre_patch_test_results, pre_patch_evaluation_report, pre_patch_output = run_tests_on_container(
                     container, test_spec, log_dir, logger, timeout, "pre_patch_"
                 )
                 
                 result["pre_patch_test_results"] = pre_patch_test_results
                 result["pre_patch_evaluation_report"] = pre_patch_evaluation_report
+                result["pre_patch_terminal_output"] = pre_patch_output
                 
-                # Check if pre-patch tests passed
+                # Check if pre-patch tests passed and show results
                 if pre_patch_evaluation_report:
                     instance_report = pre_patch_evaluation_report.get(instance_id, {})
                     result["pre_patch_tests_passed"] = instance_report.get("resolved", False)
                     
-                    if result["pre_patch_tests_passed"]:
-                        print("✅ All pre-patch tests passed!")
-                    else:
-                        print("❌ Some pre-patch tests failed")
+                    # Show detailed results
+                    if "tests_status" in instance_report:
+                        tests_status = instance_report["tests_status"]
+                        formatted_results = format_test_results(tests_status)
+                        result["pre_patch_test_details"] = formatted_results
                         
-                        # Show detailed results
-                        if "tests_status" in instance_report:
-                            tests_status = instance_report["tests_status"]
-                            f2p_success = len(tests_status.get("FAIL_TO_PASS", {}).get("success", []))
-                            f2p_failure = len(tests_status.get("FAIL_TO_PASS", {}).get("failure", []))
-                            p2p_success = len(tests_status.get("PASS_TO_PASS", {}).get("success", []))
-                            p2p_failure = len(tests_status.get("PASS_TO_PASS", {}).get("failure", []))
-                            
-                            print(f"  Fail-to-Pass: {f2p_success} passed, {f2p_failure} failed")
-                            print(f"  Pass-to-Pass: {p2p_success} passed, {p2p_failure} failed")
+                        f2p = formatted_results["fail_to_pass"]
+                        p2p = formatted_results["pass_to_pass"]
+                        
+                        print(f"Pre-patch test results:")
+                        print(f"  FAIL_TO_PASS: {f2p['success']}/{f2p['total']} passed {'✅' if f2p['passed'] else '❌'}")
+                        print(f"  PASS_TO_PASS: {p2p['success']}/{p2p['total']} passed {'✅' if p2p['passed'] else '❌'}")
+                    else:
+                        result["pre_patch_test_details"] = None
+                        print("Pre-patch: Could not determine detailed test results")
                 else:
-                    print("⚠️  Could not determine pre-patch test results")
+                    result["pre_patch_test_details"] = None
+                    print("Pre-patch: Could not determine test results")
                 
                 # Get the gold patch from the instance
                 gold_patch = instance.get("patch", "")
@@ -257,17 +265,17 @@ def test_image(
                 applied_patch = False
                 for git_apply_cmd in GIT_APPLY_CMDS:
                     try:
-                        val = container.exec_run(
+                        exit_code, output = container.exec_run(
                             f"{git_apply_cmd} {DOCKER_PATCH}",
                             workdir=DOCKER_WORKDIR,
                             user=DOCKER_USER,
                         )
-                        if val.exit_code == 0:
-                            logger.info(f"{APPLY_PATCH_PASS}:\n{val.output.decode(UTF8)}")
+                        if exit_code == 0:
+                            logger.info(f"{APPLY_PATCH_PASS}:\n{output.decode(UTF8)}")
                             applied_patch = True
                             break
                         else:
-                            logger.info(f"Failed to apply patch with {git_apply_cmd}: {val.output.decode(UTF8)}")
+                            logger.info(f"Failed to apply patch with {git_apply_cmd}: {output.decode(UTF8)}")
                     except Exception as e:
                         logger.info(f"Error applying patch with {git_apply_cmd}: {str(e)}")
                         continue
@@ -281,13 +289,10 @@ def test_image(
                 print("✅ Gold patch applied successfully")
                 
                 # Get git diff to see what changed
-                git_diff_output = (
-                    container.exec_run(
-                        "git -c core.fileMode=false diff", workdir=DOCKER_WORKDIR
-                    )
-                    .output.decode(UTF8)
-                    .strip()
+                _, git_diff_bytes = container.exec_run(
+                    "git -c core.fileMode=false diff", workdir=DOCKER_WORKDIR
                 )
+                git_diff_output = git_diff_bytes.decode(UTF8).strip()
                 logger.info(f"Git diff after patch application:\n{git_diff_output}")
                 
                 # Run tests AFTER applying the patch
@@ -298,28 +303,35 @@ def test_image(
                 
                 result["post_patch_test_results"] = post_patch_test_results
                 result["post_patch_evaluation_report"] = post_patch_evaluation_report
+                result["post_patch_terminal_output"] = post_patch_output
                 
                 # Check if post-patch tests passed
                 if post_patch_evaluation_report:
                     instance_report = post_patch_evaluation_report.get(instance_id, {})
                     result["post_patch_tests_passed"] = instance_report.get("resolved", False)
                     
-                    if result["post_patch_tests_passed"]:
-                        print("✅ All post-patch tests passed!")
-                    else:
-                        print("❌ Some post-patch tests failed")
+                    # Show detailed results
+                    if "tests_status" in instance_report:
+                        tests_status = instance_report["tests_status"]
+                        formatted_results = format_test_results(tests_status)
+                        result["post_patch_test_details"] = formatted_results
                         
-                        # Show detailed results
-                        if "tests_status" in instance_report:
-                            tests_status = instance_report["tests_status"]
-                            f2p_success = len(tests_status.get("FAIL_TO_PASS", {}).get("success", []))
-                            f2p_failure = len(tests_status.get("FAIL_TO_PASS", {}).get("failure", []))
-                            p2p_success = len(tests_status.get("PASS_TO_PASS", {}).get("success", []))
-                            p2p_failure = len(tests_status.get("PASS_TO_PASS", {}).get("failure", []))
-                            
-                            print(f"  Fail-to-Pass: {f2p_success} passed, {f2p_failure} failed")
-                            print(f"  Pass-to-Pass: {p2p_success} passed, {p2p_failure} failed")
+                        f2p = formatted_results["fail_to_pass"]
+                        p2p = formatted_results["pass_to_pass"]
+                        
+                        print(f"Post-patch test results:")
+                        print(f"  FAIL_TO_PASS: {f2p['success']}/{f2p['total']} passed {'✅' if f2p['passed'] else '❌'}")
+                        print(f"  PASS_TO_PASS: {p2p['success']}/{p2p['total']} passed {'✅' if p2p['passed'] else '❌'}")
+                        
+                        if result["post_patch_tests_passed"]:
+                            print("✅ All post-patch tests passed!")
+                        else:
+                            print("❌ Some post-patch tests failed")
+                    else:
+                        result["post_patch_test_details"] = None
+                        print("Post-patch: Could not determine detailed test results")
                 else:
+                    result["post_patch_test_details"] = None
                     print("⚠️  Could not determine post-patch test results")
                 
             finally:
@@ -335,7 +347,6 @@ def test_image(
         result["error"] = error_msg
         print(f"Traceback: {traceback.format_exc()}")
     
-    result["total_runtime"] = time.time() - start_time
     return result
 
 
@@ -363,10 +374,7 @@ def test_swe_image_builder(
     """
     start_time = time.time()
     results = {
-        "total_runtime": 0.0,
-        "build_summary": None,
         "instance_results": {},
-        "overall_success": False,
         "errors": []
     }
     
@@ -384,19 +392,11 @@ def test_swe_image_builder(
             force_rebuild=force_rebuild,
         )
         
-        # Get build summary
-        build_summary = builder.get_build_summary()
-        results["build_summary"] = build_summary
-        print(f"Build Summary: {build_summary}")
-        
         # Step 2: Test each successfully built image
         print("\n🧪 Step 2: Testing built images...")
-        successful_tests = 0
-        total_tests = 0
         
         for instance_id in instance_ids:
             print(f"\n--- Testing instance: {instance_id} ---")
-            total_tests += 1
             
             try:
                 # Get image name from builder
@@ -424,15 +424,27 @@ def test_swe_image_builder(
                     }
                     
                     if test_result.get("patch_applied", False):
-                        successful_tests += 1
                         print(f"✅ {instance_id}: Image built and patch applied successfully")
                         
                         # Show test results summary
                         pre_patch_passed = test_result.get('pre_patch_tests_passed', False)
                         post_patch_passed = test_result.get('post_patch_tests_passed', False)
+                        pre_patch_details = test_result.get('pre_patch_test_details')
+                        post_patch_details = test_result.get('post_patch_test_details')
                         
                         print(f"  Pre-patch tests: {'✅ PASSED' if pre_patch_passed else '❌ FAILED'}")
+                        if pre_patch_details:
+                            f2p = pre_patch_details["fail_to_pass"]
+                            p2p = pre_patch_details["pass_to_pass"]
+                            print(f"    FAIL_TO_PASS: {f2p['success']}/{f2p['total']} {'✅' if f2p['passed'] else '❌'}")
+                            print(f"    PASS_TO_PASS: {p2p['success']}/{p2p['total']} {'✅' if p2p['passed'] else '❌'}")
+                        
                         print(f"  Post-patch tests: {'✅ PASSED' if post_patch_passed else '❌ FAILED'}")
+                        if post_patch_details:
+                            f2p = post_patch_details["fail_to_pass"]
+                            p2p = post_patch_details["pass_to_pass"]
+                            print(f"    FAIL_TO_PASS: {f2p['success']}/{f2p['total']} {'✅' if f2p['passed'] else '❌'}")
+                            print(f"    PASS_TO_PASS: {p2p['success']}/{p2p['total']} {'✅' if p2p['passed'] else '❌'}")
                         
                         if not pre_patch_passed and post_patch_passed:
                             print("  🎯 PERFECT: Patch fixed failing tests!")
@@ -468,29 +480,12 @@ def test_swe_image_builder(
                     "error": error_msg
                 }
         
-        # Step 3: Generate final summary
-        results["overall_success"] = successful_tests == total_tests
-        results["successful_tests"] = successful_tests
-        results["total_tests"] = total_tests
-        
-        print(f"\n📊 Final Summary:")
-        print(f"  Total instances: {total_tests}")
-        print(f"  Successful tests: {successful_tests}")
-        print(f"  Failed tests: {total_tests - successful_tests}")
-        print(f"  Overall success: {'✅ YES' if results['overall_success'] else '❌ NO'}")
-        
-        if results["errors"]:
-            print(f"\n❌ Errors encountered:")
-            for error in results["errors"]:
-                print(f"  - {error}")
-        
     except Exception as e:
         error_msg = f"Error in test_swe_image_builder: {str(e)}"
         print(f"❌ {error_msg}")
         results["errors"].append(error_msg)
         print(f"Traceback: {traceback.format_exc()}")
     
-    results["total_runtime"] = time.time() - start_time
     return results
 
 
@@ -500,11 +495,7 @@ def main():
     test_instance_ids = [
         "django__django-11680",  # The one from the original test
         "astropy__astropy-11693",  # Another instance to test
-    ]
-    
-    print("🧪 Testing SWEBenchImageBuilder with 2 instances")
-    print(f"Instance IDs: {test_instance_ids}")
-    
+    ]    
     # Run the test
     results = test_swe_image_builder(
         instance_ids=test_instance_ids,
@@ -514,38 +505,6 @@ def main():
         force_rebuild=False,  # Set to True if you want to rebuild existing images
         timeout=600,
     )
-    
-    # Print final results
-    print(f"\n🎉 Test completed in {results['total_runtime']:.2f} seconds")
-    print(f"Overall success: {'✅ YES' if results['overall_success'] else '❌ NO'}")
-    
-    # Print detailed evaluation results for validation
-    print(f"\n📊 Detailed Evaluation Results:")
-    print(f"Build Summary: {results['build_summary']}")
-    
-    for instance_id, instance_data in results['instance_results'].items():
-        print(f"\n--- Instance: {instance_id} ---")
-        print(f"Image: {instance_data['image_name']}")
-        print(f"Build Status: {instance_data['build_status']}")
-        print(f"Success: {'✅ YES' if instance_data['success'] else '❌ NO'}")
-        
-        if instance_data['test_result']:
-            test_result = instance_data['test_result']
-            print(f"Patch Applied: {'✅ YES' if test_result.get('patch_applied', False) else '❌ NO'}")
-            print(f"Pre-patch Tests: {'✅ PASSED' if test_result.get('pre_patch_tests_passed', False) else '❌ FAILED'}")
-            print(f"Post-patch Tests: {'✅ PASSED' if test_result.get('post_patch_tests_passed', False) else '❌ FAILED'}")
-            print(f"Test Runtime: {test_result.get('total_runtime', 0.0):.2f} seconds")
-            
-            if test_result.get('error'):
-                print(f"Error: {test_result['error']}")
-        
-        if instance_data.get('error'):
-            print(f"Instance Error: {instance_data['error']}")
-    
-    if results['errors']:
-        print(f"\n❌ Errors encountered:")
-        for error in results['errors']:
-            print(f"  - {error}")
 
 
 if __name__ == "__main__":

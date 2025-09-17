@@ -8,13 +8,15 @@ from typing import override
 
 from src.tools.base import Tool, ToolCallArguments, ToolError, ToolExecResult, ToolParameter
 from src.tools.run import run
+from src.tools.executor import Executor
 
 
 class SearchTool(Tool):
     """Tool for searching files based on text content using ripgrep."""
 
-    def __init__(self, model_provider: str | None = None) -> None:
+    def __init__(self, model_provider: str | None = None, executor: Executor | None = None) -> None:
         super().__init__(model_provider)
+        self._executor = executor
 
     @override
     def get_model_provider(self) -> str | None:
@@ -50,7 +52,7 @@ Example patterns:
     @override
     def get_parameters(self) -> list[ToolParameter]:
         """Get the parameters for the search tool."""
-        return [
+        params = [
             ToolParameter(
                 name="pattern",
                 type="string",
@@ -100,6 +102,25 @@ Example patterns:
                 required=False,
             ),
         ]
+        
+        # Add container-specific parameters if executor is available
+        if self._executor:
+            params.extend([
+                ToolParameter(
+                    name="session_id",
+                    type="string",
+                    description="Session ID for container execution. Required when using container executor.",
+                    required=True,
+                ),
+                ToolParameter(
+                    name="use_container",
+                    type="boolean",
+                    description="Whether to execute search in container. Default: true when executor is provided.",
+                    required=False,
+                ),
+            ])
+        
+        return params
 
     @override
     async def execute(self, arguments: ToolCallArguments) -> ToolExecResult:
@@ -188,29 +209,126 @@ Example patterns:
         except Exception as e:
             return ToolExecResult(error=f"Search tool error: {str(e)}", error_code=-1)
 
+
+    def container_search(self, arguments: ToolCallArguments, session_id: str = "0") -> ToolExecResult:
+        """在容器中执行搜索操作"""
+        if not self._executor:
+            return ToolExecResult(error="No executor provided for container search", error_code=-1)
+        
+        try:
+            # 从参数中提取搜索相关参数
+            pattern = str(arguments.get("pattern", ""))
+            if not pattern:
+                return ToolExecResult(error="Pattern parameter is required", error_code=-1)
+
+            search_path_str = str(arguments.get("search_path", ""))
+            if not search_path_str:
+                return ToolExecResult(error="search_path parameter is required", error_code=-1)
+
+            # 解析可选参数
+            context_lines = int(arguments.get("context_lines", 2))
+            case_insensitive = bool(arguments.get("case_insensitive", False))
+            include_hidden = bool(arguments.get("include_hidden", False))
+            include_binary = bool(arguments.get("include_binary", False))
+            file_types = arguments.get("file_types")
+            max_results = int(arguments.get("max_results", 100))
+
+            # 构建 ripgrep 命令
+            cmd_parts = ["rg"]
+
+            # 添加上下文行数
+            if context_lines > 0:
+                cmd_parts.extend(["-C", str(context_lines)])
+
+            # 添加大小写敏感性
+            if case_insensitive:
+                cmd_parts.append("-i")
+
+            # 添加隐藏文件
+            if include_hidden:
+                cmd_parts.append("--hidden")
+
+            # 添加二进制文件
+            if include_binary:
+                cmd_parts.append("--binary")
+            else:
+                cmd_parts.append("--no-binary")
+
+            # 添加文件类型
+            if file_types and isinstance(file_types, str):
+                for file_type in file_types.split(","):
+                    file_type = file_type.strip()
+                    if file_type:
+                        cmd_parts.extend(["-t", file_type])
+
+            # 添加行号和文件名
+            cmd_parts.extend(["-n", "-H"])
+
+            # 添加最大结果数
+            cmd_parts.extend(["-m", str(max_results * 2)])
+
+            # 添加搜索模式和路径
+            cmd_parts.extend([f'"{pattern}"', search_path_str])
+
+            # 在容器中执行命令
+            command = " ".join(cmd_parts)
+            print(f"DEBUG: SearchTool executing command: {command}")  # Debug output
+            return_code, output = self._executor.execute(session_id, command)
+            print(f"DEBUG: SearchTool result - Return code: {return_code}, Output: {output}")  # Debug output
+
+            if return_code == 0:
+                # 解析和格式化结果
+                results = self._parse_rg_output(output)
+                formatted_output = self._format_results(results, max_results)
+                return ToolExecResult(output=formatted_output)
+            elif return_code == 1:
+                # 没有找到匹配
+                return ToolExecResult(output=f"No matches found for pattern: {pattern}")
+            else:
+                # 发生错误
+                return ToolExecResult(error=f"ripgrep exited with code {return_code}. Output: {output}", error_code=return_code)
+
+        except Exception as e:
+            return ToolExecResult(error=f"Container search error: {str(e)}", error_code=-1)
+
     def _parse_rg_output(self, output: str) -> list[dict]:
         """Parse ripgrep output into structured results."""
+        import re
+        
+        # Remove ANSI escape codes
+        ansi_escape = re.compile(r'\x1b\[[0-9;]*m')
+        clean_output = ansi_escape.sub('', output)
+        
         results = []
         current_file = None
 
-        for line in output.split("\n"):
+        for line in clean_output.split("\n"):
             if not line.strip():
                 continue
 
+            # Check if this is a file path line (no colon, just a path)
+            if ":" not in line and "/" in line and not line.strip().startswith("-"):
+                # This is a file path line
+                current_file = line.strip()
+                continue
+            
             # Parse ripgrep output format: file:line:content or file:line-content
             if ":" in line:
-                # Check if this line contains a match (has line number)
+                # Split by colon to get file, line info, and content
                 parts = line.split(":", 2)
                 if len(parts) >= 3:
                     file_path = parts[0].strip()
                     line_info = parts[1].strip()
                     content = parts[2].strip()
                     
+                    # Use current_file if file_path is empty or just a dash
+                    if not file_path or file_path == "-":
+                        file_path = current_file
+                    
                     # Check if line_info is a number (match line) or contains dash (context line)
                     if line_info.isdigit():
                         # This is a match line
                         line_num = int(line_info)
-                        current_file = file_path
                         results.append({
                             "file": file_path,
                             "line": line_num,
@@ -218,15 +336,11 @@ Example patterns:
                             "full_line": line,
                             "is_match": True
                         })
-                    elif "-" in line_info and current_file == file_path:
+                    elif "-" in line_info:
                         # This is a context line (before/after match)
                         # Extract line number from context line format like "12-15" or "12-"
                         try:
-                            if "-" in line_info:
-                                line_num = int(line_info.split("-")[0])
-                            else:
-                                continue
-                            
+                            line_num = int(line_info.split("-")[0])
                             results.append({
                                 "file": file_path,
                                 "line": line_num,

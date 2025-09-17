@@ -101,6 +101,8 @@ def run_tests_on_container(
         container, run_command, timeout
     )
     
+    print("*"*20 + "Test executed" + "*"*20)
+    
     # Save test output to file
     test_output_file = log_dir / f"{test_prefix}{LOG_TEST_OUTPUT}"
     test_output_file.write_text(test_output, encoding=UTF8)
@@ -213,6 +215,8 @@ def test_image(
             try:
                 # Start the container
                 container.start()
+
+                print("*"*20 + "Container started" + "*"*20)
                 
                 # Run tests BEFORE applying the patch
                 pre_patch_test_results, pre_patch_evaluation_report, pre_patch_output = run_tests_on_container(
@@ -225,6 +229,12 @@ def test_image(
                 
                 # Check if pre-patch tests passed and show results
                 if pre_patch_evaluation_report:
+                    print(f"DEBUG: pre_patch_evaluation_report type: {type(pre_patch_evaluation_report)}")
+                    print(f"DEBUG: pre_patch_evaluation_report: {pre_patch_evaluation_report}")
+                    print(f"DEBUG: instance_id: {instance_id}")
+                    if isinstance(pre_patch_evaluation_report, tuple):
+                        print(f"ERROR: pre_patch_evaluation_report is a tuple: {pre_patch_evaluation_report}")
+                        raise TypeError(f"pre_patch_evaluation_report is a tuple, not a dict: {pre_patch_evaluation_report}")
                     instance_report = pre_patch_evaluation_report.get(instance_id, {})
                     result["pre_patch_tests_passed"] = instance_report.get("resolved", False)
                     
@@ -307,6 +317,12 @@ def test_image(
                 
                 # Check if post-patch tests passed
                 if post_patch_evaluation_report:
+                    print(f"DEBUG: post_patch_evaluation_report type: {type(post_patch_evaluation_report)}")
+                    print(f"DEBUG: post_patch_evaluation_report: {post_patch_evaluation_report}")
+                    print(f"DEBUG: instance_id: {instance_id}")
+                    if isinstance(post_patch_evaluation_report, tuple):
+                        print(f"ERROR: post_patch_evaluation_report is a tuple: {post_patch_evaluation_report}")
+                        raise TypeError(f"post_patch_evaluation_report is a tuple, not a dict: {post_patch_evaluation_report}")
                     instance_report = post_patch_evaluation_report.get(instance_id, {})
                     result["post_patch_tests_passed"] = instance_report.get("resolved", False)
                     

@@ -41,13 +41,11 @@ class Executor:
             self.sessions[session_id] = shell
             return session_id
         except pexpect.exceptions.TIMEOUT:
-            print(f"❌ Timeout waiting for shell prompt.")
             return None
 
     def execute(self, session_id: str, command: str, timeout: int = 300) -> tuple[int, str]:
         shell = self.sessions.get(session_id)
         if not shell or not shell.isalive():
-            print(f"❌ Session {session_id} is not active or does not exist.")
             return -1, "Session not found or is dead."
 
         marker = f"---CMD_DONE---"
@@ -77,17 +75,12 @@ class Executor:
         if '0' in self.sessions:
             session = self.sessions['0']
             if session and session.isalive():
-                print(f"✅ Session {'0'} is alive.")
                 return True
             else:
-                print(f"❌ Session {'0'} is dead. Cleaning up...")
                 self.sessions.pop('0')
-        else:
-            print(f"❌ Session {'0'} does not exist.")
         
         new_session_id = self.init_session()
         if new_session_id is None:
-            print(f"❌ Failed to restart session {'0'}.")
             return False
         if new_session_id != '0':
             self.sessions['0'] = self.sessions.pop(new_session_id)
@@ -99,8 +92,7 @@ class Executor:
             session = self.sessions.pop(session_id)
             if session and session.isalive():
                 session.close(force=True)
-        else:
-            print(f"Warning: Session {session_id} not found.")
+        # Session not found - this is not an error condition
 
     def shutdown(self):
         for session_id in list(self.sessions.keys()):
@@ -111,5 +103,5 @@ class Executor:
                 self.container.stop()
                 self.container.remove()
             except DockerException as e:
-                print(f"❌ Could not clean up container: {e}")
+                pass  # Silently handle cleanup errors
         self.container = None

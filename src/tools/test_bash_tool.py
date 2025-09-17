@@ -64,8 +64,7 @@ class MinimalToolsTest:
         if not self.image_name:
             logger.error("No Docker image available. Run setup_swebench_image() first.")
             return False
-        self.executor = Executor(self.image_name)
-        # Session '0' is automatically initialized by Executor.__init__
+        self.executor = Executor(self.image_name)            
         self.bash_tool = BashTool(model_provider="openai", executor=self.executor)            
         return True
     

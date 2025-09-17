@@ -18,7 +18,7 @@ providers:
 
 # 数据集配置
 dataset:
-  name: "princeton-nlp/SWE-bench_Lite"
+  name: "princeton-nlp/SWE-bench"
   split: "dev"
 
 # 工作空间配置

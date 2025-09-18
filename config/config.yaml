@@ -34,7 +34,7 @@ rag:
 
 # Runner 配置
 runner:
-  generator_concurrency: 2  # GeneratorLoop 并发数量
+  generator_concurrency: 5  # GeneratorLoop 并发数量
 
 # Builder 配置
 builder:
@@ -42,5 +42,5 @@ builder:
 
 # 日志配置
 log:
-  path: "workspace/logs/run"
+  base_path: "workspace/logs"
     

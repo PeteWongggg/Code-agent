@@ -9,12 +9,14 @@ from src.tools.base import ToolExecutor
 from src.managers.log.logger import create_logger
 from src.managers.llm_api.api_manager import LLMAPIManager
 from src.managers.image_builder.build_image import SWEBenchImageBuilder
+from src.managers.prompts.prompts_manager import PromptsManager
 
-class Loop:
-    def __init__(self, instance_id: str, image_name: str, runner_log_base: Path, llm_manager: LLMAPIManager | None, instance_data: Dict[str, Any]):
+class GeneratorLoop:
+    def __init__(self, instance_id: str, image_name: str, runner_log_base: Path, llm_manager: LLMAPIManager | None, prompts_manager: PromptsManager | None, instance_data: Dict[str, Any]):
         self.instance_id = instance_id
         self.image_name = image_name
         self.llm_manager = llm_manager
+        self.prompts_manager = prompts_manager
         self.instance_data = instance_data
         # 每个实例独立日志目录（位于 Runner 的 log 路径下）
         self.log_dir = runner_log_base / instance_id
@@ -24,7 +26,7 @@ class Loop:
     def run(self) -> Dict[str, Any]:
         executor: Executor | None = None
         try:
-            self.logger.info(f"启动实例 Loop: {self.instance_id} -> {self.image_name}")
+            self.logger.info(f"启动实例 GeneratorLoop: {self.instance_id} -> {self.image_name}")
             executor = Executor(self.image_name)
 
             # 注册工具
@@ -92,7 +94,7 @@ class Runner:
         self.dataset_name = dataset_cfg.get("name", "princeton-nlp/SWE-bench_Lite")
         self.dataset_split = dataset_cfg.get("split", "dev")
         self.max_workers = int(builder_cfg.get("max_workers", 2)) # 镜像构建并发数量
-        self.loop_concurrency = int(runner_cfg.get("concurrency", 2)) # loop 并发数量
+        self.generator_loop_concurrency = int(runner_cfg.get("generator_concurrency", 2)) # GeneratorLoop 并发数量
 
         # 日志路径优先级：log.path > workspace.log_path > workspace.path/logs/run
         self.logs_base = Path(
@@ -116,6 +118,14 @@ class Runner:
                 self.llm_manager = LLMAPIManager(client_name=first_provider, logger=self.logger)
         except Exception:
             self.llm_manager = None
+        
+        # 初始化 Prompts 管理器
+        self.prompts_manager: PromptsManager | None = None
+        try:
+            self.prompts_manager = PromptsManager(cfg)
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize PromptsManager: {e}")
+            self.prompts_manager = None
 
     def build_images(self):
         self.logger.info("初始化 SWEBenchImageBuilder 并准备镜像...")
@@ -131,7 +141,7 @@ class Runner:
         )
 
     async def _run_one(self, instance_id: str, image_name: str, instance_data: Dict[str, Any]) -> Dict[str, Any]:
-        loop = Loop(instance_id, image_name, self.logs_base, self.llm_manager, instance_data)
+        loop = GeneratorLoop(instance_id, image_name, self.logs_base, self.llm_manager, self.prompts_manager, instance_data)
         # 在线程池中执行阻塞型工作，便于并发
         return await asyncio.to_thread(loop.run)
 
@@ -141,7 +151,7 @@ class Runner:
 
         assert self.builder is not None
 
-        sem = asyncio.Semaphore(self.loop_concurrency)
+        sem = asyncio.Semaphore(self.generator_loop_concurrency)
         tasks = []
 
         async def bound_run(instance_id: str, image_name: str, instance_data: Dict[str, Any]):

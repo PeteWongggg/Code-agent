@@ -31,4 +31,16 @@ rag:
     enabled: true
     client: "openai"
     model: "text-embedding-3-small"  # OpenAI 最轻量的 embedding 模型
+
+# Runner 配置
+runner:
+  generator_concurrency: 2  # GeneratorLoop 并发数量
+
+# Builder 配置
+builder:
+  max_workers: 2  # 镜像构建并发数量
+
+# 日志配置
+log:
+  path: "workspace/logs/run"
     

@@ -287,6 +287,10 @@ Notes for using the `str_replace` command:
             raise ToolError("No executor provided for container operations")
         
         try:
+            # Check if session is alive and restart if needed
+            if not self.executor.check_session():
+                raise ToolError("Container session is not alive and could not be restarted")
+            
             # Use cat command to read file content
             command = f"cat {path}"
             return_code, output = self.executor.execute(session_id, command)
@@ -310,6 +314,10 @@ Notes for using the `str_replace` command:
             raise ToolError("No executor provided for container operations")
         
         try:
+            # Check if session is alive and restart if needed
+            if not self.executor.check_session():
+                raise ToolError("Container session is not alive and could not be restarted")
+            
             # Use cat with here document to handle long content
             # Create a script that writes the content using here document
             script_content = f"""cat > {path} << 'EOF'
@@ -330,6 +338,10 @@ EOF"""
             raise ToolError("No executor provided for container operations")
         
         try:
+            # Check if session is alive and restart if needed
+            if not self.executor.check_session():
+                raise ToolError("Container session is not alive and could not be restarted")
+            
             # First, read the file to check if old_str exists
             file_content = self.container_read_file(path, session_id)
             
@@ -349,6 +361,10 @@ EOF"""
             # Escape special characters for sed
             escaped_old = self._escape_sed(old_str)
             escaped_new = self._escape_sed(new_str) if new_str is not None else ""
+            
+            # Check session again before sed command
+            if not self.executor.check_session():
+                raise ToolError("Container session is not alive and could not be restarted")
             
             # Use sed for in-place replacement
             command = f"sed -i 's/{escaped_old}/{escaped_new}/g' {path}"

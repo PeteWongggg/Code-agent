@@ -2,6 +2,11 @@
 # 定义要测试的提供商及其对应的模型列表
 
 providers:
+  # OpenRouter 提供商（多模型聚合）
+  openrouter:
+    - "openai/gpt-4o-mini"
+    - "anthropic/claude-3-5-sonnet"
+    
    # 私有化部署提供商
   private:
     - "/mnt/i/ai/models/qwen/qwen2.5-coder-3b-instruct"
@@ -11,10 +16,7 @@ providers:
     - "gpt-4o"
     - "gpt-3.5-turbo"
   
-  # OpenRouter 提供商（多模型聚合）
-  openrouter:
-    - "openai/gpt-4o-mini"
-    - "anthropic/claude-3-5-sonnet"
+  
 
 # 数据集配置
 dataset:

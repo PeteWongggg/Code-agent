@@ -109,6 +109,13 @@ class AnthropicClient(BaseLLMAPI):
         if request.stop is not None:
             payload["stop_sequences"] = request.stop if isinstance(request.stop, list) else [request.stop]
         
+        # 工具调用支持
+        if request.tools is not None:
+            payload["tools"] = request.tools
+        
+        if request.tool_choice is not None:
+            payload["tool_choice"] = request.tool_choice
+        
         # Anthropic 不直接支持 frequency_penalty 和 presence_penalty
         # 可以通过其他方式实现或忽略
         
@@ -132,11 +139,28 @@ class AnthropicClient(BaseLLMAPI):
                 # Anthropic 将系统消息单独处理
                 system_prompt = message.content
             elif message.role in [MessageRole.USER, MessageRole.ASSISTANT]:
-                anthropic_messages.append({
+                message_dict = {
                     "role": message.role.value,
                     "content": message.content
+                }
+                
+                # 处理工具调用
+                if message.tool_calls:
+                    message_dict["tool_calls"] = message.tool_calls
+                
+                anthropic_messages.append(message_dict)
+            elif message.role == MessageRole.TOOL:
+                # 处理工具响应消息
+                anthropic_messages.append({
+                    "role": "user",  # Anthropic 将工具响应作为用户消息
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": message.tool_call_id,
+                            "content": message.content
+                        }
+                    ]
                 })
-            # 暂时忽略 TOOL 角色，可以根据需要扩展
         
         return anthropic_messages, system_prompt
     
@@ -152,12 +176,36 @@ class AnthropicClient(BaseLLMAPI):
         """
         # Anthropic 响应格式转换为 OpenAI 格式
         content = ""
+        tool_calls = None
+        
         if response_data.get("content"):
-            content = response_data["content"][0].get("text", "") if response_data["content"] else ""
+            # 处理文本内容
+            text_content = ""
+            tool_calls_list = []
+            
+            for content_block in response_data["content"]:
+                if content_block.get("type") == "text":
+                    text_content += content_block.get("text", "")
+                elif content_block.get("type") == "tool_use":
+                    # 处理工具调用
+                    tool_call = {
+                        "id": content_block.get("id"),
+                        "type": "function",
+                        "function": {
+                            "name": content_block.get("name"),
+                            "arguments": content_block.get("input", {})
+                        }
+                    }
+                    tool_calls_list.append(tool_call)
+            
+            content = text_content
+            if tool_calls_list:
+                tool_calls = tool_calls_list
         
         message = ChatMessage(
             role=MessageRole.ASSISTANT,
-            content=content
+            content=content,
+            tool_calls=tool_calls
         )
         
         choice = Choice(

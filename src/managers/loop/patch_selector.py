@@ -14,10 +14,12 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 import tempfile
 import os
+import re
 
 from ..llm_api.api_manager import LLMAPIManager
 from ...tools.base import Tool, ToolCall, ToolResult, ToolExecutor
 from ...tools.executor import Executor
+from .base import BaseLoopManager
 
 
 @dataclass
@@ -35,7 +37,7 @@ class CandidatePatch:
     confidence: float = 0.0  # Confidence score for this patch
 
 
-class PatchSelector:
+class PatchSelector(BaseLoopManager):
     """
     Intelligent patch selector that uses LLM reasoning to choose the best patch
     from multiple candidates.
@@ -65,32 +67,20 @@ class PatchSelector:
             tools: Optional tools for the selector to use
             logger: Logger instance
         """
-        self.llm_manager = llm_manager
-        self.model = model
-        self.max_turns = max_turns
-        self.temperature = temperature
-        self.tools = tools or []
-        self.logger = logger
-        self.image_name = image_name
-        self.instance_id = instance_id
-        
-        # Tool executor for tool-based reasoning
-        if self.tools:
-            self.tool_executor = ToolExecutor(self.tools)
-        else:
-            self.tool_executor = None
-            
-        # Validate required parameters
-        if not self.image_name:
-            raise ValueError("image_name is required for container-based testing")
-        if not self.instance_id:
-            raise ValueError("instance_id is required for tracking")
-            
-        if self.logger:
-            self.logger.info(f"Initialized PatchSelector with image: {self.image_name}, instance: {self.instance_id}")
+        super().__init__(
+            llm_manager=llm_manager,
+            model=model,
+            image_name=image_name,
+            instance_id=instance_id,
+            max_turns=max_turns,
+            temperature=temperature,
+            tools=tools,
+            logger=logger
+        )
     
-    def build_system_prompt(self, candidate_count: int) -> str:
+    def build_system_prompt(self, candidate_count: int = None, **kwargs) -> str:
         """Build the system prompt for patch selection."""
+        candidate_count = candidate_count or 3  # Default to 3 if not provided
         return f"""You are an expert code evaluator. Given a codebase, a GitHub issue, and **{candidate_count} candidate patches** proposed by different sources, your responsibility is to **select the correct one** to solve the issue.
 
 **CONTAINER TESTING CAPABILITIES:**
@@ -128,6 +118,36 @@ Choose the patch that best resolves the issue with minimal risk of introducing n
 3. There must be at least one correct patch.
 4. Consider the confidence scores and regression test results when available.
 """
+    
+    def build_user_prompt(self, issue_description: str, project_path: str, candidate_patches: List[CandidatePatch], context_files: Optional[List[str]] = None, **kwargs) -> str:
+        """Build the user prompt for patch selection."""
+        user_prompt = f"""
+[Codebase path]:
+{project_path}
+
+[GitHub issue description]:
+```
+{issue_description}
+```
+
+[Candidate Patches]:"""
+        
+        for idx, patch in enumerate(candidate_patches):
+            user_prompt += f"\nPatch-{idx + 1}:\n```\n{patch.patch}\n```"
+            
+            # Add metadata if available
+            if patch.confidence > 0:
+                user_prompt += f"\nConfidence: {patch.confidence:.2f}"
+            if not patch.is_success_regression:
+                user_prompt += f"\nRegression Warning: This patch may cause regressions"
+        
+        # Add context files if provided
+        if context_files:
+            user_prompt += f"\n\n[Relevant Context Files]:\n"
+            for file_path in context_files:
+                user_prompt += f"- {file_path}\n"
+        
+        return user_prompt
     
     def _select_best_patch(
         self,
@@ -225,13 +245,13 @@ Choose the patch that best resolves the issue with minimal risk of introducing n
             session_id = "0"  # Use default session
             
             # Apply the selected patch
-            patch_success, patch_output = self._apply_patch_in_container(selected_patch.patch, executor, session_id)
+            patch_success, patch_output = self.apply_patch_in_container(selected_patch.patch, executor, session_id)
             test_results["patch_applied"] = patch_success
             test_results["patch_output"] = patch_output
             
             if patch_success:
                 # Run tests to validate the patch
-                test_success, test_output = self._run_tests_in_container(executor, session_id)
+                test_success, test_output = self.run_tests_in_container(executor, session_id)
                 test_results["tests_passed"] = test_success
                 test_results["test_output"] = test_output
             else:
@@ -262,117 +282,8 @@ Choose the patch that best resolves the issue with minimal risk of introducing n
         
         return selected_patch.id, selected_patch.patch, metadata
     
-    def _parse_selection_response(self, response: str, num_patches: int) -> Tuple[Optional[int], Optional[str]]:
-        """Parse the LLM response to extract patch selection."""
-        # Look for success status
-        success_match = re.search(
-            r"(?:###\s*)?Status:\s*(success|succeed|successfully|successful)\s*\n\s*(?:###\s*)?Result:",
-            response,
-            re.IGNORECASE
-        )
-        
-        if not success_match:
-            return None, response
-        
-        # Look for result
-        result_match = re.search(
-            r"(?:###\s*)?Result:\s*(.+?)\s*(?:###\s*)?Analysis:",
-            response,
-            re.IGNORECASE
-        )
-        
-        if not result_match:
-            return None, response
-        
-        # Extract patch number
-        result_text = result_match.group(1).strip()
-        patch_match = re.search(r"Patch-(\d+)", result_text)
-        
-        if not patch_match:
-            return None, response
-        
-        try:
-            patch_num = int(patch_match.group(1))
-            if 1 <= patch_num <= num_patches:
-                # Extract analysis
-                analysis_match = re.search(
-                    r"(?:###\s*)?Analysis:\s*(.+?)(?:\n\n|\Z)",
-                    response,
-                    re.IGNORECASE | re.DOTALL
-                )
-                analysis = analysis_match.group(1).strip() if analysis_match else response
-                return patch_num, analysis
-        except ValueError:
-            pass
-        
-        return None, response
     
-    def _apply_patch_in_container(self, patch: str, executor: Executor, session_id: str = "0") -> Tuple[bool, str]:
-        """
-        Apply a patch in the container using git apply.
-        
-        Args:
-            patch: The patch content to apply
-            executor: Executor instance for container operations
-            session_id: Session ID for the executor
-            
-        Returns:
-            Tuple of (success, output)
-        """
-        try:
-            # Copy patch file to container
-            exit_code, output = executor.execute(
-                session_id, 
-                f"cat > /tmp/patch.patch << 'EOF'\n{patch}\nEOF"
-            )
-            
-            if exit_code != 0:
-                return False, f"Failed to create patch file: {output}"
-            
-            # Apply the patch
-            exit_code, output = executor.execute(
-                session_id,
-                "git apply /tmp/patch.patch"
-            )
-            
-            return exit_code == 0, output
-            
-        except Exception as e:
-            return False, f"Error applying patch: {str(e)}"
     
-    def _run_tests_in_container(self, executor: Executor, session_id: str = "0") -> Tuple[bool, str]:
-        """
-        Run tests in the container to validate the current state.
-        
-        Args:
-            executor: Executor instance for container operations
-            session_id: Session ID for the executor
-            
-        Returns:
-            Tuple of (success, output)
-        """
-        try:
-            # Try common test commands
-            test_commands = [
-                "python -m pytest",
-                "python -m unittest discover",
-                "python setup.py test",
-                "make test",
-                "npm test",
-                "python -m pytest tests/",
-                "python -m unittest",
-                "python test.py"
-            ]
-            
-            for cmd in test_commands:
-                exit_code, output = executor.execute(session_id, cmd)
-                if exit_code == 0:
-                    return True, output
-                    
-            return False, "No tests found or all tests failed"
-            
-        except Exception as e:
-            return False, f"Error running tests: {str(e)}"
     
     
     def select_patch(

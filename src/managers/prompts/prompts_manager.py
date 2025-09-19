@@ -124,3 +124,12 @@ Choose the patch that best resolves the issue with minimal risk of introducing n
 
     def get_selector_user(self):
         return ""
+
+    def get_terminal_response(self, exit_code: int, output: str, timeout_status: bool):
+        if timeout_status == True:    
+            return f"""[Terminal response]
+Exit code: {exit_code}
+Output: {output}"""
+        else:
+            return f"""[Terminal response]
+Terminal time out."""

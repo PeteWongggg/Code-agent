@@ -453,12 +453,10 @@ class SWEBenchImageBuilder:
         self.full_dataset = load_swebench_dataset(dataset_name, split)
         self._populate_existing_images_mapping(instance_ids)
         
-        # Filter to get instances that need building
         self.dataset_to_build = filter_dataset_to_build(
             self.full_dataset, instance_ids, self.client, force_rebuild, namespace, tag, self.env_image_tag
         )
         
-        # Filter out instances that already exist in instance_to_image mapping
         if self.instance_to_image:
             print(f"Filtering out {len(self.instance_to_image)} existing instances from dataset_to_build...")
             # Create a set of existing instance IDs for faster lookup
@@ -467,12 +465,10 @@ class SWEBenchImageBuilder:
             self.dataset_to_build = [inst for inst in self.dataset_to_build if inst['instance_id'] not in existing_instance_ids]
             print(f"Remaining instances to process: {len(self.dataset_to_build)}")
         
-        # Build images for the filtered dataset
         if len(self.dataset_to_build) == 0:
             print("All images exist. Nothing left to build.")
             self.successful = []
             self.failed = []
-            # Populate instance_to_image mapping for existing images
             print(f"Populating mapping for instance_ids: {instance_ids}")
         else:
             print(f"Building images for {len(self.dataset_to_build)} instances...")
@@ -488,7 +484,6 @@ class SWEBenchImageBuilder:
             print(f"Successfully built {len(self.successful)} images")
             print(f"Failed to build {len(self.failed)} images")
             
-            # Add ripgrep to all successfully built images
             if self.successful:
                 print("Adding ripgrep to built images...")
                 self._add_ripgrep_to_images(self.successful)
@@ -543,60 +538,6 @@ class SWEBenchImageBuilder:
                 return 'failed'
         
         return 'unknown'
-    
-    def delete_image(self, instance_id: str) -> bool:
-        """
-        删除指定实例的镜像
-        
-        Args:
-            instance_id: 要删除的实例ID
-            
-        Returns:
-            bool: 删除是否成功
-        """
-        try:
-            image_name = self.get_image_name(instance_id)
-            self.client.images.remove(image_name)
-            print(f"Successfully deleted image: {image_name}")
-            return True
-        except KeyError as e:
-            print(f"Instance ID not found: {e}")
-            return False
-        except Exception as e:
-            print(f"Failed to delete image for {instance_id}: {e}")
-            return False
-    
-    def delete_all_images(self) -> dict:
-        """
-        删除所有 SWE-bench 相关镜像
-        
-        Returns:
-            dict: 删除结果统计
-        """
-        results = {
-            'successful': [],
-            'failed': [],
-            'not_found': []
-        }
-        
-        for instance_id in self.instance_to_image.keys():
-            try:
-                image_name = self.get_image_name(instance_id)
-                self.client.images.remove(image_name)
-                results['successful'].append(instance_id)
-                print(f"Successfully deleted: {image_name}")
-            except KeyError:
-                results['not_found'].append(instance_id)
-            except Exception as e:
-                results['failed'].append({'instance_id': instance_id, 'error': str(e)})
-                print(f"Failed to delete {instance_id}: {e}")
-        
-        print(f"Deletion summary:")
-        print(f"  Successful: {len(results['successful'])}")
-        print(f"  Failed: {len(results['failed'])}")
-        print(f"  Not found: {len(results['not_found'])}")
-        
-        return results
     
     def _populate_existing_images_mapping(self, instance_ids):
         """Populate instance_to_image mapping for existing images that don't need rebuilding."""
@@ -730,6 +671,10 @@ class SWEBenchImageBuilder:
             verify_result = container.exec_run("rg --version", stdout=True, stderr=True)
             if verify_result.exit_code != 0:
                 raise Exception(f"Ripgrep verification failed: {verify_result.output.decode()}")
+            
+            # Note: Git repository isolation is already handled by the SWE-bench harness
+            # during the initial image build process via the install_repo_script.
+            # The harness ensures agents cannot access commits beyond the test commit.
             
             # Create a new image with ripgrep - use a new name
             # Handle image name and tag properly

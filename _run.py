@@ -11,14 +11,16 @@ from src.managers.log.logger import create_logger, Logger
 from src.managers.llm_api.api_manager import LLMAPIManager
 from src.managers.image_builder.build_image import SWEBenchImageBuilder
 from src.managers.prompts.prompts_manager import PromptsManager
+from src.managers.loop.patch_generator import PatchGenerator
 
 class SelectorLoop:
-    def __init__(self, instance_id: str, image_name: str, runner_log_base: Path, llm_manager: LLMAPIManager | None, prompts_manager: PromptsManager | None, instance_data: Dict[str, Any]):
+    def __init__(self, instance_id: str, image_name: str, runner_log_base: Path, llm_manager: LLMAPIManager | None, prompts_manager: PromptsManager | None, instance_data: Dict[str, Any], config: Dict[str, Any]):
         self.instance_id = instance_id
         self.image_name = image_name
         self.llm_manager = llm_manager
         self.prompts_manager = prompts_manager
         self.instance_data = instance_data
+        self.config = config
         # SelectorLoop 日志目录：run/instance_id/selector/
         self.log_dir = runner_log_base / "run" / instance_id / "selector"
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -80,13 +82,14 @@ class SelectorLoop:
         return result
 
 class GeneratorLoop:
-    def __init__(self, instance_id: str, image_name: str, runner_log_base: Path, llm_manager: LLMAPIManager | None, prompts_manager: PromptsManager | None, instance_data: Dict[str, Any], generator_id: int = 0):
+    def __init__(self, instance_id: str, image_name: str, runner_log_base: Path, llm_manager: LLMAPIManager | None, prompts_manager: PromptsManager | None, instance_data: Dict[str, Any], config: Dict[str, Any], generator_id: int = 0):
         self.instance_id = instance_id
         self.image_name = image_name
         self.generator_id = generator_id
         self.llm_manager = llm_manager
         self.prompts_manager = prompts_manager
         self.instance_data = instance_data
+        self.config = config
         # 每个实例的 generator 独立日志目录：run/instance_id/generator/generator_id/
         self.log_dir = runner_log_base / "run" / instance_id / "generator" / f"{generator_id:03d}"
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -107,13 +110,25 @@ class GeneratorLoop:
             bash_tool = BashTool(model_provider=None, executor=executor)
             edit_tool = TextEditorTool(model_provider=None, executor=executor)
             search_tool = SearchTool(model_provider=None, executor=executor)
-            _ = ToolExecutor([bash_tool, edit_tool, search_tool])
+            tool_executor = ToolExecutor([bash_tool, edit_tool, search_tool])
 
             # 写Agent逻辑
 
             # 可选：做一次基本探活
             code, out = executor.execute('0', 'echo READY && rg --version || true')
             self.logger.info(f"容器探活: exit={code}, out=\n{out}")
+
+            # 初始化 Patch 生成器，并执行一次候选补丁生成
+            patch_generator = PatchGenerator(
+                instance_id=self.instance_id,
+                instance_data=self.instance_data,
+                logger=self.logger,
+                prompts_manager=self.prompts_manager,
+                llm_manager=self.llm_manager,
+                tool_executor=tool_executor,
+                config=self.config,
+            )
+            _ = patch_generator._generate_patch()
 
             # Mock 结果结构体
             result: Dict[str, Any] = {
@@ -213,7 +228,7 @@ class Runner:
 
     # 运行单个 GeneratorLoop
     async def _run_one(self, instance_id: str, image_name: str, instance_data: Dict[str, Any], generator_id: int = 0) -> Dict[str, Any]:
-        loop = GeneratorLoop(instance_id, image_name, self.logs_base, self.llm_manager, self.prompts_manager, instance_data, generator_id)
+        loop = GeneratorLoop(instance_id, image_name, self.logs_base, self.llm_manager, self.prompts_manager, instance_data, self.cfg, generator_id)
         # 在线程池中执行阻塞型工作，便于并发
         return await asyncio.to_thread(loop.generate)
 
@@ -258,7 +273,8 @@ class Runner:
             runner_log_base=self.logs_base,
             llm_manager=self.llm_manager,
             prompts_manager=self.prompts_manager,
-            instance_data=instance
+            instance_data=instance,
+            config=self.cfg,
         )
         selected_result = selector.select(valid_results) # 选择最佳结果
 

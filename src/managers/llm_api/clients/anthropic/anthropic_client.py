@@ -5,7 +5,7 @@ Anthropic Claude 客户端实现
 
 import json
 import time
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 
 from src.managers.llm_api.base_client import (
     BaseLLMAPI,
@@ -109,6 +109,13 @@ class AnthropicClient(BaseLLMAPI):
         if request.stop is not None:
             payload["stop_sequences"] = request.stop if isinstance(request.stop, list) else [request.stop]
         
+        # 工具调用支持（Anthropic 格式）
+        if request.tools is not None:
+            payload["tools"] = self._convert_tools_to_anthropic_format(request.tools)
+        
+        if request.tool_choice is not None:
+            payload["tool_choice"] = self._convert_tool_choice_to_anthropic_format(request.tool_choice)
+        
         # Anthropic 不直接支持 frequency_penalty 和 presence_penalty
         # 可以通过其他方式实现或忽略
         
@@ -140,6 +147,82 @@ class AnthropicClient(BaseLLMAPI):
         
         return anthropic_messages, system_prompt
     
+    def _convert_tools_to_anthropic_format(self, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        将 OpenAI 格式的工具定义转换为 Anthropic 格式
+        
+        Args:
+            tools: OpenAI 格式的工具列表
+            
+        Returns:
+            List[Dict[str, Any]]: Anthropic 格式的工具列表
+        """
+        anthropic_tools = []
+        
+        for tool in tools:
+            if tool.get("type") == "function":
+                function_def = tool.get("function", {})
+                anthropic_tool = {
+                    "name": function_def.get("name", ""),
+                    "description": function_def.get("description", ""),
+                    "input_schema": function_def.get("parameters", {})
+                }
+                anthropic_tools.append(anthropic_tool)
+        
+        return anthropic_tools
+    
+    def _convert_tool_choice_to_anthropic_format(self, tool_choice: Union[str, Dict[str, Any]]) -> Union[str, Dict[str, Any]]:
+        """
+        将 OpenAI 格式的工具选择转换为 Anthropic 格式
+        
+        Args:
+            tool_choice: OpenAI 格式的工具选择
+            
+        Returns:
+            Union[str, Dict[str, Any]]: Anthropic 格式的工具选择
+        """
+        if isinstance(tool_choice, str):
+            if tool_choice == "auto":
+                return "auto"
+            elif tool_choice == "none":
+                return "none"
+            else:
+                # 假设是工具名称
+                return {"type": "tool", "name": tool_choice}
+        elif isinstance(tool_choice, dict):
+            if tool_choice.get("type") == "function":
+                return {"type": "tool", "name": tool_choice.get("function", {}).get("name", "")}
+            elif tool_choice.get("type") == "tool":
+                return tool_choice
+        
+        return "auto"  # 默认值
+    
+    def _convert_anthropic_tool_calls(self, content_list: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+        """
+        将 Anthropic 工具调用格式转换为 OpenAI 格式
+        
+        Args:
+            content_list: Anthropic 内容列表
+            
+        Returns:
+            Optional[List[Dict[str, Any]]]: OpenAI 格式的工具调用列表
+        """
+        tool_calls = []
+        
+        for item in content_list:
+            if item.get("type") == "tool_use":
+                tool_call = {
+                    "id": item.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": item.get("name", ""),
+                        "arguments": item.get("input", {})
+                    }
+                }
+                tool_calls.append(tool_call)
+        
+        return tool_calls if tool_calls else None
+    
     def _parse_response(self, response_data: Dict[str, Any]) -> ChatCompletionResponse:
         """
         解析 Anthropic API 响应为 OpenAI 格式
@@ -152,12 +235,21 @@ class AnthropicClient(BaseLLMAPI):
         """
         # Anthropic 响应格式转换为 OpenAI 格式
         content = ""
+        tool_calls = None
+        
         if response_data.get("content"):
-            content = response_data["content"][0].get("text", "") if response_data["content"] else ""
+            content_data = response_data["content"][0] if response_data["content"] else {}
+            content = content_data.get("text", "")
+            
+            # 检查是否有工具调用
+            if content_data.get("type") == "tool_use":
+                # Anthropic 的工具调用格式需要转换为 OpenAI 格式
+                tool_calls = self._convert_anthropic_tool_calls(response_data.get("content", []))
         
         message = ChatMessage(
             role=MessageRole.ASSISTANT,
-            content=content
+            content=content,
+            tool_calls=tool_calls
         )
         
         choice = Choice(

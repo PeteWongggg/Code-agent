@@ -187,14 +187,8 @@ class Runner:
         )
 
         self.builder: SWEBenchImageBuilder | None = None
-        # 初始化 LLM 管理器（取第一个可用 provider）
-        self.llm_manager: LLMAPIManager | None = None
-        try:
-            first_provider: str | None = next(iter(providers_cfg.keys())) if isinstance(providers_cfg, dict) and providers_cfg else None
-            if first_provider:
-                self.llm_manager = LLMAPIManager(client_name=first_provider, logger=self.logger)
-        except Exception:
-            self.llm_manager = None
+        # 初始化 LLM 管理器（取第一个provider）
+        self.llm_manager = LLMAPIManager(logger=self.logger)
         
         # 初始化 Prompts 管理器
         self.prompts_manager: PromptsManager | None = None

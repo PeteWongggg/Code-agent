@@ -14,12 +14,13 @@ from src.managers.prompts.prompts_manager import PromptsManager
 from src.managers.loop.patch_generator import PatchGenerator
 
 class SelectorLoop:
-    def __init__(self, instance_id: str, image_name: str, runner_log_base: Path, llm_manager: LLMAPIManager | None, prompts_manager: PromptsManager | None, instance_data: Dict[str, Any]):
+    def __init__(self, instance_id: str, image_name: str, runner_log_base: Path, llm_manager: LLMAPIManager | None, prompts_manager: PromptsManager | None, instance_data: Dict[str, Any], config: Dict[str, Any]):
         self.instance_id = instance_id
         self.image_name = image_name
         self.llm_manager = llm_manager
         self.prompts_manager = prompts_manager
         self.instance_data = instance_data
+        self.config = config
         # SelectorLoop 日志目录：run/instance_id/selector/
         self.log_dir = runner_log_base / "run" / instance_id / "selector"
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -272,7 +273,8 @@ class Runner:
             runner_log_base=self.logs_base,
             llm_manager=self.llm_manager,
             prompts_manager=self.prompts_manager,
-            instance_data=instance
+            instance_data=instance,
+            config=self.cfg,
         )
         selected_result = selector.select(valid_results) # 选择最佳结果
 

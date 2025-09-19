@@ -216,7 +216,7 @@ class LLMAPIManager:
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         **kwargs
-    ) -> Optional[str]:
+    ) -> Union[ChatCompletionResponse, Generator[ChatCompletionChunk, None, None], None]:
         """
         发送聊天消息并获取响应
         
@@ -234,7 +234,10 @@ class LLMAPIManager:
             **kwargs: 其他请求参数
             
         Returns:
-            Optional[str]: 完整的响应内容，如果所有重试都失败则返回 None
+            Union[ChatCompletionResponse, Generator[ChatCompletionChunk, None, None], None]:
+                - 非流式: 返回完整的 ChatCompletionResponse 对象
+                - 流式: 返回流式响应生成器
+                - 失败: 返回 None
         """
         # 使用传入的参数或默认值
         actual_timeout = timeout if timeout is not None else self.timeout
@@ -274,23 +277,16 @@ class LLMAPIManager:
                 response = self.client.chat_completions_create(request)
                 
                 if self.stream:
-                    # 流式响应：收集所有内容并拼接后返回
-                    content_parts = []
-                    for chunk in response:
-                        if chunk and chunk.choices:
-                            delta = chunk.choices[0].get('delta', {})
-                            if 'content' in delta and delta['content']:
-                                content_parts.append(delta['content'])
-                    result = ''.join(content_parts)
+                    # 流式响应：直接返回生成器
                     if self.logger:
-                        self.logger.info(f"流式聊天请求成功 - 模型: {model}, 响应长度: {len(result)} 字符")
-                    return result
+                        self.logger.info(f"流式聊天请求成功 - 模型: {model}")
+                    return response
                 else:
-                    # 非流式响应：返回完整内容
-                    result = response.choices[0].message.content
+                    # 非流式响应：返回完整的 ChatCompletionResponse
                     if self.logger:
-                        self.logger.info(f"聊天请求成功 - 模型: {model}, 响应长度: {len(result)} 字符")
-                    return result
+                        content_length = len(response.choices[0].message.content) if response.choices else 0
+                        self.logger.info(f"聊天请求成功 - 模型: {model}, 响应长度: {content_length} 字符")
+                    return response
                     
             except Exception as e:
                 last_exception = e
@@ -306,6 +302,60 @@ class LLMAPIManager:
         
         # 所有重试都失败，返回 None
         return None
+    
+    def chat_simple(
+        self,
+        model: str,
+        messages: List[Union[Dict[str, Any], ChatMessage]],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[int] = None,
+        retry: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
+        **kwargs
+    ) -> Optional[str]:
+        """
+        发送聊天消息并获取简单文本响应（向后兼容方法）
+        
+        Args:
+            model: 模型名称
+            messages: 已拼接好的消息列表
+            temperature: 温度参数
+            max_tokens: 最大 token 数
+            timeout: 请求超时时间（秒）
+            retry: 最大重试次数
+            tools: 工具描述列表
+            tool_choice: 工具选择策略
+            **kwargs: 其他请求参数
+            
+        Returns:
+            Optional[str]: 响应文本内容，失败时返回 None
+        """
+        # 临时禁用流式模式
+        original_stream = self.stream
+        self.stream = False
+        
+        try:
+            response = self.chat(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                retry=retry,
+                tools=tools,
+                tool_choice=tool_choice,
+                **kwargs
+            )
+            
+            if response and hasattr(response, 'choices') and response.choices:
+                return response.choices[0].message.content
+            return None
+            
+        finally:
+            # 恢复原始流式设置
+            self.stream = original_stream
     
     def create_embeddings(
         self,

@@ -235,14 +235,18 @@ class BaseLLMAPI(ABC):
                 # 构建完整的 URL
                 full_url = self.base_url.rstrip('/') + endpoint
                 
-                # 准备请求头
-                headers = {
-                    "Content-Type": "application/json",
-                }
-                
-                # 添加认证头（如果需要）
-                if self.api_key and self.api_key != "EMPTY":
-                    headers["Authorization"] = f"Bearer {self.api_key}"
+                # 使用子类设置的完整请求头
+                headers = {}
+                if self.session and self.session.headers:
+                    headers.update(self.session.headers)
+                else:
+                    # 回退到基本请求头
+                    headers = {
+                        "Content-Type": "application/json",
+                    }
+                    # 添加认证头（如果需要）
+                    if self.api_key and self.api_key != "EMPTY":
+                        headers["Authorization"] = f"Bearer {self.api_key}"
                 
                 # 使用 requests 发送请求
                 response = requests.post(
@@ -283,14 +287,18 @@ class BaseLLMAPI(ABC):
                 # 构建完整的 URL
                 full_url = self.base_url.rstrip('/') + endpoint
                 
-                # 准备请求头
-                headers = {
-                    "Content-Type": "application/json"
-                }
-                
-                # 添加认证头（如果需要）
-                if self.api_key and self.api_key != "EMPTY":
-                    headers["Authorization"] = f"Bearer {self.api_key}"
+                # 使用子类设置的完整请求头
+                headers = {}
+                if self.session and self.session.headers:
+                    headers.update(self.session.headers)
+                else:
+                    # 回退到基本请求头
+                    headers = {
+                        "Content-Type": "application/json",
+                    }
+                    # 添加认证头（如果需要）
+                    if self.api_key and self.api_key != "EMPTY":
+                        headers["Authorization"] = f"Bearer {self.api_key}"
                 
                 # 使用 requests 发送请求
                 response = requests.post(
@@ -467,13 +475,19 @@ class BaseLLMAPI(ABC):
         """
         # 构建完整的 URL
         full_url = self.base_url.rstrip('/') + endpoint
-        # 准备请求头
-        headers = {
-            "Content-Type": "application/json"
-        }
-        # 添加认证头（如果需要）
-        if self.api_key and self.api_key != "EMPTY":
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        
+        # 使用子类设置的完整请求头
+        headers = {}
+        if self.session and self.session.headers:
+            headers.update(self.session.headers)
+        else:
+            # 回退到基本请求头
+            headers = {
+                "Content-Type": "application/json",
+            }
+            # 添加认证头（如果需要）
+            if self.api_key and self.api_key != "EMPTY":
+                headers["Authorization"] = f"Bearer {self.api_key}"
         # 使用 requests 发送流式请求
         response = requests.post(
             full_url,

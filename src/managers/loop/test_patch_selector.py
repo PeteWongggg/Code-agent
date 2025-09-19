@@ -14,6 +14,7 @@ from src.managers.llm_api.api_manager import LLMAPIManager
 from src.managers.prompts.prompts_manager import PromptsManager
 from src.managers.patch_selector.test_loop import run_patch_selector_test
 from src.managers.log.logger import Logger
+from src.managers.loop.patch_selector import PatchSelector
 
 
 class PatchSelectorTestRunner:
@@ -184,4 +185,7 @@ async def main():
 
 
 if __name__ == "__main__":
+    api = LLMAPIManager(logger=)
+    api.chat()
+    
     asyncio.run(main())

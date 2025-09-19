@@ -86,9 +86,9 @@ We're currently solving the following issue within our repository. Here's the is
 7. Validate locally by running tests, linters, and smoke checks to ensure safety.
 """
     
-    def get_selector_system(self):
+    def get_selector_system(self, patches_count: int):
         return f"""
-# ROLE: Act as an expert code evaluator. Given a codebase, an github issue and **{self.candidate_length} candidate patches** proposed by your colleagues, your responsibility is to **select the correct one** to solve the issue.
+# ROLE: Act as an expert code evaluator. Given a codebase, an github issue and **{patches_count} candidate patches** proposed by your colleagues, your responsibility is to **select the correct one** to solve the issue.
 
 # WORK PROCESS:
 You are given a software issue and multiple candidate patches. Your goal is to identify the patch that correctly resolves the issue.

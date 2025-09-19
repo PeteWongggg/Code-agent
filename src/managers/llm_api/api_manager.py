@@ -7,6 +7,7 @@ import os
 import time
 from typing import Dict, List, Any, Optional, Union, Generator
 from dotenv import load_dotenv
+import yaml
 
 from .base_client import (
     BaseLLMAPI,
@@ -80,7 +81,7 @@ class LLMAPIManager:
     
     def __init__(
         self,
-        client_name: str,
+        client_name: Optional[str] = None,
         stream: bool = False,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
@@ -104,7 +105,14 @@ class LLMAPIManager:
             logger: 日志记录器实例（可选）
             **kwargs: 其他配置参数
         """
-        self.client_name = client_name.lower()
+        # 若未提供 client，从配置读取默认 providers 的第一个提供商
+        if client_name is None:
+            default_client, default_model = self._load_default_client_and_model_from_config()
+            self.client_name = default_client
+            self.default_model = default_model
+        else:
+            self.client_name = client_name.lower()
+            self.default_model = None
         self.stream = stream
         self.timeout = timeout
         self.max_retries = max_retries
@@ -123,6 +131,11 @@ class LLMAPIManager:
         
         # 初始化客户端
         self.client = self._create_client(api_key, base_url, **kwargs)
+
+        # 如果未从配置读取到默认模型，尝试根据常用配置推断（可选，不强制）
+        if self.default_model is None:
+            # 不做强制推断，保持为 None，调用方可显式传入
+            pass
         
     def _load_environment(self) -> None:
         """加载环境变量"""
@@ -204,11 +217,43 @@ class LLMAPIManager:
             client_kwargs.setdefault("deployment_type", "vllm")
         
         return client_class(**client_kwargs)
+
+    def _load_default_client_and_model_from_config(self) -> (str, Optional[str]):
+        """
+        从 config/config.yaml 读取 providers 的第一个提供商名称作为默认 client，
+        并取其模型列表中的第一个模型作为默认模型。
+        """
+        # 解析配置文件路径（相对项目根目录）
+        # 当前文件位于 src/managers/llm_api/api_manager.py
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
+        config_path = os.path.join(base_dir, "config", "config.yaml")
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"未找到配置文件: {config_path}")
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+
+        providers = cfg.get("providers")
+        if not isinstance(providers, dict) or len(providers) == 0:
+            raise ValueError("config.yaml 中缺少 providers 配置或格式不正确")
+
+        # 取第一个 provider（PyYAML 在 Py3.7+ 保持插入顺序）
+        first_provider_name = next(iter(providers.keys()))
+        models = providers.get(first_provider_name) or []
+        first_model = models[0] if isinstance(models, list) and len(models) > 0 else None
+
+        client_key = first_provider_name.strip().lower()
+        if client_key not in self.SUPPORTED_CLIENTS:
+            raise ValueError(
+                f"配置中的默认提供商 '{first_provider_name}' 未在 SUPPORTED_CLIENTS 中注册"
+            )
+
+        return client_key, first_model
     
     def chat(
         self,
-        model: str,
         messages: List[Union[Dict[str, Any], ChatMessage]],
+        model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         timeout: Optional[int] = None,
@@ -221,7 +266,7 @@ class LLMAPIManager:
         发送聊天消息并获取响应
         
         Args:
-            model: 模型名称
+            model: 模型名称（可选，未提供则使用 self.default_model）
             messages: 已拼接好的消息列表。
                 - 若为字典列表: [{"role": "system|user|assistant|tool", "content": "..."}]
                 - 或 `ChatMessage` 列表
@@ -243,8 +288,13 @@ class LLMAPIManager:
         actual_timeout = timeout if timeout is not None else self.timeout
         actual_retry = retry if retry is not None else self.max_retries
         
+        # 处理默认模型
+        actual_model = model if model is not None else self.default_model
+        if not actual_model:
+            raise ValueError("未提供模型且未能从配置中确定默认模型")
+
         if self.logger:
-            self.logger.debug(f"开始聊天请求 - 客户端: {self.client_name}, 模型: {model}, 流式: {self.stream}")
+            self.logger.debug(f"开始聊天请求 - 客户端: {self.client_name}, 模型: {actual_model}, 流式: {self.stream}")
         
         # 规范化消息列表为 ChatMessage 列表
         normalized_messages: List[ChatMessage] = []
@@ -264,7 +314,7 @@ class LLMAPIManager:
                 # 创建请求
                 request = self.client.create_request(
                     messages=normalized_messages,
-                    model=model,
+                    model=actual_model,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     stream=self.stream,
@@ -279,13 +329,13 @@ class LLMAPIManager:
                 if self.stream:
                     # 流式响应：直接返回生成器
                     if self.logger:
-                        self.logger.info(f"流式聊天请求成功 - 模型: {model}")
+                        self.logger.info(f"流式聊天请求成功 - 模型: {actual_model}")
                     return response
                 else:
                     # 非流式响应：返回完整的 ChatCompletionResponse
                     if self.logger:
                         content_length = len(response.choices[0].message.content) if response.choices else 0
-                        self.logger.info(f"聊天请求成功 - 模型: {model}, 响应长度: {content_length} 字符")
+                        self.logger.info(f"聊天请求成功 - 模型: {actual_model}, 响应长度: {content_length} 字符")
                     return response
                     
             except Exception as e:

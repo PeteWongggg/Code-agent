@@ -5,7 +5,6 @@ providers:
   # OpenRouter 提供商（多模型聚合）
   openrouter:
     - "openai/gpt-4o-mini"
-    - "anthropic/claude-3-5-sonnet"
     
    # 私有化部署提供商
   private:

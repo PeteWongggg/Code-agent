@@ -553,7 +553,7 @@ if __name__ == "__main__":
     # 🎯 测试配置 - 修改这里来选择要测试的客户端和模型
     # =============================================================================
     
-    client_2_use = "private"           # 使用 OpenAI 做函数调用测试
+    client_2_use = "openrouter"           # 使用 OpenAI 做函数调用测试
     api_key = api_map[client_2_use]         # 自动从环境变量获取API密钥
     model = model_map[client_2_use][0] # 选择模型
     use_stream=False # 工具调用建议使用非流式，便于观察 tool_calls
@@ -616,23 +616,3 @@ if __name__ == "__main__":
         tools=tools_to_use,
         tool_choice=tool_choice_to_use
     )
-    
-    
-    print("\n" + "=" * 80)
-    print("💡 快速使用指南:")
-    print("1. 环境配置:")
-    print("   - 复制 env.example 为 .env")
-    print("   - 在 .env 文件中配置你的API密钥")
-    print("2. 客户端选择:")
-    print("   - client_2_use = client_list[0-4] 来切换客户端")
-    print("   - 0:OpenAI, 1:Anthropic, 2:DeepSeek, 3:OpenRouter, 4:Private")
-    print("3. 模型选择:")
-    print("   - model = model_map[client_2_use][0-1] 来切换模型")
-    print("4. 私有化部署配置:")
-    print("   - PRIVATE_URL: 私有化服务地址 (如: https://127.0.0.1:33/v1)")
-    print("   - PRIVATE_MODEL_NAME: 模型名称 (如: qwen-2.5-coder)")
-    print("   - PRIVATE_DEPLOYMENT_TYPE: 部署类型 (vllm/tgi/ollama)")
-    print("   - PRIVATE_API_KEY: API密钥 (通常为 EMPTY)")
-    print("5. 高级选项:")
-    print("   - 取消注释上面的选项来测试更多功能")
-    print("=" * 80)
